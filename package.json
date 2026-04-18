@@ -1,0 +1,28 @@
+{
+  "name": "mini-claw",
+  "version": "0.0.1",
+  "description": "Mini provider-agnostic Claude Code clone (learning exercise). TypeScript + Bun. Supports OpenAI and Anthropic.",
+  "type": "module",
+  "module": "src/main.ts",
+  "private": true,
+  "bin": {
+    "mini-cc": "src/main.ts"
+  },
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
+    "commander": "^14.0.3",
+    "openai": "^6.34.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
