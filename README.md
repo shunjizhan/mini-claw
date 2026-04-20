@@ -43,9 +43,14 @@ test/                   # mirrors src/ layout
 
 ## Provider selection
 
-- `MINI_CC_PROVIDER=anthropic` (default) — requires `ANTHROPIC_API_KEY`
-- `MINI_CC_PROVIDER=openai` — requires `OPENAI_API_KEY`
+- `MINI_CC_PROVIDER=anthropic` (default) — uses `ANTHROPIC_API_KEY` if set
+- `MINI_CC_PROVIDER=openai` — uses `OPENAI_API_KEY` if set
 - `MINI_CC_MODEL=...` — override the model (provider-specific default otherwise)
+- `MINI_CC_BASE_URL=...` — API base URL. Defaults to `http://localhost:8317`
+  (a local proxy). Set to `https://api.anthropic.com` or
+  `https://api.openai.com/v1` to hit the real APIs directly.
+  When pointed at a local proxy that doesn't require auth, the API-key env
+  vars are optional — a placeholder is injected.
 
 ## Tests
 

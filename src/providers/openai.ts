@@ -12,9 +12,11 @@ import type {
 } from '../types';
 import { ProviderProtocolError } from '../types';
 import type { Tool } from '../Tool';
-import type { LLMProvider } from './index';
+import { resolveBaseURL, type LLMProvider } from './index';
 
-const DEFAULT_MODEL = 'gpt-4o';
+const DEFAULT_MODEL = 'gpt-5.4';
+/** Used when no OPENAI_API_KEY is set — see anthropic.ts for rationale. */
+const PLACEHOLDER_API_KEY = 'mini-cc-placeholder';
 
 export interface OpenAIProviderOptions {
   apiKey?: string;
@@ -34,19 +36,17 @@ export interface OpenAIProviderOptions {
  */
 export class OpenAIProvider implements LLMProvider {
   private readonly client: OpenAI;
-  private readonly model: string;
+  public readonly model: string;
 
   constructor(opts: OpenAIProviderOptions = {}) {
-    const apiKey = opts.apiKey ?? process.env['OPENAI_API_KEY'];
-    if (!apiKey) {
-      throw new Error(
-        'OPENAI_API_KEY is not set. Export it or pass { apiKey } to OpenAIProvider.',
-      );
-    }
-    this.client = new OpenAI({
-      apiKey,
-      ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
-    });
+    const apiKey =
+      opts.apiKey ?? process.env['OPENAI_API_KEY'] ?? PLACEHOLDER_API_KEY;
+    // OpenAI's baseURL convention includes the API-version prefix (e.g.
+    // https://api.openai.com/v1); Anthropic's doesn't. MINI_CC_BASE_URL
+    // follows the Anthropic shape (host only), so we append /v1 here when
+    // the caller's URL doesn't already carry a /vN segment.
+    const baseURL = ensureVersionPrefix(resolveBaseURL(opts.baseURL));
+    this.client = new OpenAI({ apiKey, baseURL });
     this.model = opts.model ?? process.env['MINI_CC_MODEL'] ?? DEFAULT_MODEL;
   }
 
@@ -140,6 +140,17 @@ export class OpenAIProvider implements LLMProvider {
     const assistantMessage: AssistantMessage = { role: 'assistant', content };
     yield { type: 'message_complete', assistantMessage, stopReason, usage };
   }
+}
+
+/**
+ * Append `/v1` to a URL when its path doesn't already end in a `/vN`
+ * version segment. Leaves `https://api.openai.com/v1` and
+ * `https://custom.proxy/v2` untouched; turns `http://localhost:8317` into
+ * `http://localhost:8317/v1`. Exported for testing.
+ */
+export function ensureVersionPrefix(baseURL: string): string {
+  const trimmed = baseURL.replace(/\/+$/, '');
+  return /\/v\d+$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
 // ========== Translation helpers (pure functions) ==========

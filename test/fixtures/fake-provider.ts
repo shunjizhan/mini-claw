@@ -14,6 +14,7 @@ import type { Tool } from '../../src/Tool';
  * engine sent.
  */
 export class FakeProvider implements LLMProvider {
+  public readonly model = 'fake-model';
   private callCount = 0;
   public readonly capturedMessages: Message[][] = [];
   public readonly capturedTools: Tool[][] = [];
@@ -50,6 +51,7 @@ export class FakeProvider implements LLMProvider {
  * testing the QueryEngine's abort atomicity.
  */
 export class AbortingProvider implements LLMProvider {
+  public readonly model = 'aborting-fake';
   async *sampleStream(
     _messages: Message[],
     _tools: Tool[],

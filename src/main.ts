@@ -4,7 +4,7 @@ import { Command } from 'commander';
 
 import { QueryEngine } from './QueryEngine';
 import { DEFAULT_TOOLS } from './tools/index';
-import { selectProvider } from './providers/index';
+import { resolveBaseURL, selectProvider } from './providers/index';
 import { assembleSystemPrompt, loadMemory } from './prompt';
 import { ProviderProtocolError } from './types';
 
@@ -65,7 +65,7 @@ async function main(): Promise<void> {
 
   const provName = process.env['MINI_CC_PROVIDER'] ?? 'anthropic';
   console.log(
-    `mini-claw | provider=${provName} | cwd=${cwd}\n` +
+    `mini-claw | provider=${provName} | model=${provider.model} | baseURL=${resolveBaseURL()} | cwd=${cwd}\n` +
       `Ctrl+C aborts the current turn; Ctrl+D exits.`,
   );
   rl.prompt();

@@ -12,15 +12,20 @@ import type {
 } from '../types';
 import { ProviderProtocolError } from '../types';
 import type { Tool } from '../Tool';
-import type { LLMProvider } from './index';
+import { resolveBaseURL, type LLMProvider } from './index';
 
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
+const DEFAULT_MODEL = 'claude-opus-4-7';
 const DEFAULT_MAX_TOKENS = 8192;
+/** Used when no ANTHROPIC_API_KEY is set — lets the client instantiate so the
+ *  request can still reach a local proxy that doesn't require auth. The real
+ *  Anthropic API will reject this and surface a clean error. */
+const PLACEHOLDER_API_KEY = 'mini-cc-placeholder';
 
 export interface AnthropicProviderOptions {
   apiKey?: string;
   model?: string;
   maxTokens?: number;
+  baseURL?: string;
 }
 
 /**
@@ -35,17 +40,14 @@ export interface AnthropicProviderOptions {
  */
 export class AnthropicProvider implements LLMProvider {
   private readonly client: Anthropic;
-  private readonly model: string;
+  public readonly model: string;
   private readonly maxTokens: number;
 
   constructor(opts: AnthropicProviderOptions = {}) {
-    const apiKey = opts.apiKey ?? process.env['ANTHROPIC_API_KEY'];
-    if (!apiKey) {
-      throw new Error(
-        'ANTHROPIC_API_KEY is not set. Export it or pass { apiKey } to AnthropicProvider.',
-      );
-    }
-    this.client = new Anthropic({ apiKey });
+    const apiKey =
+      opts.apiKey ?? process.env['ANTHROPIC_API_KEY'] ?? PLACEHOLDER_API_KEY;
+    const baseURL = resolveBaseURL(opts.baseURL);
+    this.client = new Anthropic({ apiKey, baseURL });
     this.model =
       opts.model ?? process.env['MINI_CC_MODEL'] ?? DEFAULT_MODEL;
     this.maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
