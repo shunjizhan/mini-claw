@@ -1,3 +1,5 @@
+import { stat } from 'node:fs/promises';
+import * as path from 'node:path';
 import { z } from 'zod';
 
 import { buildTool } from '../Tool';
@@ -28,6 +30,20 @@ export const writeTool = buildTool({
   isDestructive: true,
   async call(input, ctx) {
     const absPath = resolveWithinCwd(input.file_path, ctx.cwd);
+    // Bun.write auto-creates parents by default; the spec says Tier 1 must
+    // error instead, so we stat the parent explicitly first.
+    const parent = path.dirname(absPath);
+    try {
+      const st = await stat(parent);
+      if (!st.isDirectory()) {
+        throw new Error(`Parent is not a directory: ${parent}`);
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`Parent directory does not exist: ${parent}`);
+      }
+      throw err;
+    }
     const existed = await Bun.file(absPath).exists();
     await Bun.write(absPath, input.content);
     const bytes = Buffer.byteLength(input.content, 'utf8');
