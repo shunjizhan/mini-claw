@@ -28,6 +28,13 @@ export const writeTool = buildTool({
     'Create or overwrite a file. Parent directory must exist. Returns "Created"/"Updated" with byte count.',
   inputSchema: WriteInput,
   isDestructive: true,
+  async checkPermissions(input) {
+    const bytes = Buffer.byteLength(input.content, 'utf8');
+    return {
+      behavior: 'ask',
+      prompt: `Write ${bytes} bytes to ${input.file_path}?`,
+    };
+  },
   async call(input, ctx) {
     const absPath = resolveWithinCwd(input.file_path, ctx.cwd);
     // Bun.write auto-creates parents by default; the spec says Tier 1 must

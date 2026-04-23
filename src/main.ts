@@ -6,6 +6,7 @@ import { QueryEngine } from './QueryEngine';
 import { DEFAULT_TOOLS } from './tools/index';
 import { resolveBaseURL, selectProvider } from './providers/index';
 import { assembleSystemPrompt, loadMemory } from './prompt';
+import { createReadlinePermissionPrompter } from './permissions';
 import { ProviderProtocolError } from './types';
 
 async function main(): Promise<void> {
@@ -34,13 +35,19 @@ async function main(): Promise<void> {
   const memory = await loadMemory(cwd);
   const systemPrompt = assembleSystemPrompt({ tools, cwd, memory });
 
-  const engine = new QueryEngine({ provider, tools, systemPrompt, cwd });
-
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
     prompt: '> ',
     terminal: true,
+  });
+
+  const engine = new QueryEngine({
+    provider,
+    tools,
+    systemPrompt,
+    cwd,
+    permissionPrompter: createReadlinePermissionPrompter(rl),
   });
 
   let turnActive = false;

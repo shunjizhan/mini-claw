@@ -41,6 +41,13 @@ export const editTool = buildTool({
     'Replace text in a file. Errors if old_string is not found, or matches more than once without replace_all:true. Writes atomically.',
   inputSchema: EditInput,
   isDestructive: true,
+  async checkPermissions(input) {
+    const suffix = input.replace_all ? ' (replace all)' : '';
+    return {
+      behavior: 'ask',
+      prompt: `Edit ${input.file_path}${suffix}?`,
+    };
+  },
   async call(input, ctx) {
     if (input.old_string === input.new_string) {
       throw new Error('old_string and new_string are identical — no edit would be made.');

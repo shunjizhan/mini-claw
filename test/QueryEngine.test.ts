@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { QueryEngine } from '../src/QueryEngine';
+import type { PermissionDecision, PermissionPrompter } from '../src/permissions';
 import { readTool, writeTool } from '../src/tools/index';
 import type { StreamEvent, ToolMessage } from '../src/types';
 import { assertCanonicalTranscript } from './fixtures/canonical-transcript';
@@ -211,6 +212,159 @@ describe('QueryEngine', () => {
     expect(engine.messages).toHaveLength(0);
     // Post-rollback state is still canonical (empty array trivially valid).
     assertCanonicalTranscript(engine.messages);
+  });
+
+  test('permissionPrompter: "allow" lets the tool run', async () => {
+    const cwd = makeTmp();
+    try {
+      const target = join(cwd, 'a.txt');
+      const provider = new FakeProvider([
+        withToolUse('', [
+          {
+            id: 'tu_1',
+            name: 'Write',
+            input: { file_path: target, content: 'ok' },
+          },
+        ]),
+        textOnly('done'),
+      ]);
+      const calls: string[] = [];
+      const prompter: PermissionPrompter = async (prompt, descriptor) => {
+        calls.push(`${descriptor}:${prompt}`);
+        return 'allow';
+      };
+      const engine = new QueryEngine({
+        provider,
+        tools: [writeTool],
+        systemPrompt: 'sys',
+        cwd,
+        permissionPrompter: prompter,
+      });
+      await drain(engine.submitMessage('write please'));
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatch(/^Write:Write 2 bytes/);
+      expect(await Bun.file(target).text()).toBe('ok');
+      const toolMsg = engine.messages[2] as ToolMessage;
+      expect(toolMsg.content[0]?.isError).toBeUndefined();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('permissionPrompter: "deny" synthesizes isError ToolResult and loop continues', async () => {
+    const cwd = makeTmp();
+    try {
+      const target = join(cwd, 'a.txt');
+      const provider = new FakeProvider([
+        withToolUse('', [
+          {
+            id: 'tu_1',
+            name: 'Write',
+            input: { file_path: target, content: 'nope' },
+          },
+        ]),
+        textOnly('understood'),
+      ]);
+      const prompter: PermissionPrompter = async () => 'deny';
+      const engine = new QueryEngine({
+        provider,
+        tools: [writeTool],
+        systemPrompt: 'sys',
+        cwd,
+        permissionPrompter: prompter,
+      });
+      await drain(engine.submitMessage('write please'));
+
+      const toolMsg = engine.messages[2] as ToolMessage;
+      expect(toolMsg.content[0]?.isError).toBe(true);
+      expect(toolMsg.content[0]?.content).toContain('Permission denied');
+      // File should NOT have been created.
+      expect(await Bun.file(target).exists()).toBe(false);
+      // Loop survived — final assistant message landed.
+      expect(engine.messages).toHaveLength(4);
+      assertCanonicalTranscript(engine.messages);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('permissionPrompter: "allow-always" caches the decision for subsequent calls', async () => {
+    const cwd = makeTmp();
+    try {
+      const a = join(cwd, 'a.txt');
+      const b = join(cwd, 'b.txt');
+      const provider = new FakeProvider([
+        withToolUse('', [
+          {
+            id: 'tu_1',
+            name: 'Write',
+            input: { file_path: a, content: 'A' },
+          },
+        ]),
+        textOnly('first done'),
+        withToolUse('', [
+          {
+            id: 'tu_2',
+            name: 'Write',
+            input: { file_path: b, content: 'B' },
+          },
+        ]),
+        textOnly('second done'),
+      ]);
+      let promptCount = 0;
+      const decisions: PermissionDecision[] = ['allow-always'];
+      const prompter: PermissionPrompter = async () => {
+        promptCount++;
+        return decisions.shift() ?? 'deny';
+      };
+      const engine = new QueryEngine({
+        provider,
+        tools: [writeTool],
+        systemPrompt: 'sys',
+        cwd,
+        permissionPrompter: prompter,
+      });
+
+      await drain(engine.submitMessage('write A'));
+      await drain(engine.submitMessage('write B'));
+
+      // Prompter fired exactly once despite two Write invocations.
+      expect(promptCount).toBe(1);
+      expect(await Bun.file(a).text()).toBe('A');
+      expect(await Bun.file(b).text()).toBe('B');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('no permissionPrompter wired: "ask" falls through to allow', async () => {
+    const cwd = makeTmp();
+    try {
+      const target = join(cwd, 'a.txt');
+      const provider = new FakeProvider([
+        withToolUse('', [
+          {
+            id: 'tu_1',
+            name: 'Write',
+            input: { file_path: target, content: 'hi' },
+          },
+        ]),
+        textOnly('done'),
+      ]);
+      const engine = new QueryEngine({
+        provider,
+        tools: [writeTool],
+        systemPrompt: 'sys',
+        cwd,
+        // no permissionPrompter → legacy allow-through behavior
+      });
+      await drain(engine.submitMessage('write'));
+
+      expect(await Bun.file(target).text()).toBe('hi');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   test('second submitMessage after previous succeeds preserves history', async () => {

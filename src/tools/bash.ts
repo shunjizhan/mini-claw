@@ -47,6 +47,16 @@ export const bashTool = buildTool({
     'Execute a shell command via `bash -c`. Returns stdout, stderr, and exit code. Default 120s timeout (max 600s). Stdout/stderr > 30KB are truncated with the full output spilled to ~/.mini-cc/bash-output/.',
   inputSchema: BashInput,
   isDestructive: true,
+  async checkPermissions(input) {
+    const preview =
+      input.command.length > 200
+        ? `${input.command.slice(0, 197)}...`
+        : input.command;
+    return {
+      behavior: 'ask',
+      prompt: `Run: ${preview}`,
+    };
+  },
   async call(input, ctx) {
     const timeoutSec = Math.min(
       input.timeout ?? DEFAULT_TIMEOUT_SEC,

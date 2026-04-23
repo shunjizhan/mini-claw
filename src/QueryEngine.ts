@@ -10,12 +10,19 @@ import type {
 import { ProviderProtocolError } from './types';
 import type { Tool, ToolContext } from './Tool';
 import type { LLMProvider } from './providers/index';
+import type { PermissionPrompter } from './permissions';
 
 export interface QueryEngineOptions {
   provider: LLMProvider;
   tools: Tool[];
   systemPrompt: string;
   cwd?: string;
+  /**
+   * Optional callback invoked when a tool's `checkPermissions()` returns
+   * `{ behavior: 'ask' }`. When omitted, 'ask' results fall through to
+   * allow (keeps non-interactive unit tests simple).
+   */
+  permissionPrompter?: PermissionPrompter;
 }
 
 /**
@@ -44,6 +51,9 @@ export class QueryEngine {
   private readonly tools: Tool[];
   private readonly systemPrompt: string;
   private readonly cwd: string;
+  private readonly permissionPrompter: PermissionPrompter | undefined;
+  /** In-session "always allow" decisions, keyed by tool.name. */
+  private readonly alwaysAllowed = new Set<string>();
   private abortController: AbortController = new AbortController();
 
   constructor(opts: QueryEngineOptions) {
@@ -51,6 +61,7 @@ export class QueryEngine {
     this.tools = opts.tools;
     this.systemPrompt = opts.systemPrompt;
     this.cwd = opts.cwd ?? process.cwd();
+    this.permissionPrompter = opts.permissionPrompter;
   }
 
   /** Read-only view of the conversation history. */
@@ -192,8 +203,29 @@ export class QueryEngine {
           isError: true,
         };
       }
-      // 'ask' falls through to allow in Tier 1 — Tier 2 will prompt the user
-      // on stdin before proceeding.
+      if (perm.behavior === 'ask') {
+        // Session cache: if the user already said "always allow" for this
+        // tool, skip the prompt.
+        if (!this.alwaysAllowed.has(tool.name) && this.permissionPrompter) {
+          const decision = await this.permissionPrompter(
+            perm.prompt,
+            tool.name,
+          );
+          if (decision === 'deny') {
+            return {
+              type: 'tool_result',
+              toolUseId: tu.id,
+              content: `Permission denied by user`,
+              isError: true,
+            };
+          }
+          if (decision === 'allow-always') {
+            this.alwaysAllowed.add(tool.name);
+          }
+          // 'allow' + 'allow-always' → fall through to tool.call()
+        }
+        // No prompter wired → fall through to allow (non-interactive tests).
+      }
     } catch (err) {
       return {
         type: 'tool_result',
