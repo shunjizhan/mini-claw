@@ -4,8 +4,17 @@ import { readTool } from './read';
 import { writeTool } from './write';
 import { editTool } from './edit';
 import { bashTool } from './bash';
+import { globTool } from './glob';
+import { grepTool } from './grep';
 
-export { readTool, writeTool, editTool, bashTool };
+export { readTool, writeTool, editTool, bashTool, globTool, grepTool };
 
-/** The full Tier 1 tool set, in canonical order. */
-export const DEFAULT_TOOLS: Tool[] = [readTool, writeTool, editTool, bashTool];
+/** The mini-claw tool set, in canonical order. */
+export const DEFAULT_TOOLS: Tool[] = [
+  readTool,
+  writeTool,
+  editTool,
+  bashTool,
+  globTool,
+  grepTool,
+];
