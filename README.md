@@ -134,6 +134,177 @@ N tool calls expand to `[UserMessage, (AssistantMessage, ToolMessage)×N, Assist
 On abort at any point, the entire buffered turn is discarded back to the
 pre-user-message state.
 
+## Skill loading and invoking
+
+Skills are markdown bundles loaded at REPL startup, advertised via the
+system prompt, and invoked through a single dispatcher tool whose `call()`
+returns the skill body as a follow-up *user* message — the `newMessages`
+injection pattern from real CC (`SkillTool.ts:291-298` for the dispatcher
+schema; `SkillTool.ts:728-755` for the injection mechanism).
+
+### Phase 1 — loading (at startup)
+
+```
+  MAIN (startup)              SkillLoader                FileSystem
+       │                            │                         │
+       │  loadSkills({ cwd })       │                         │
+       ├───────────────────────────►│                         │
+       │                            │  readdir                │
+       │                            │   ./.mini-cc/skills/    │
+       │                            ├────────────────────────►│
+       │                            │◄────── entries ─────────┤
+       │                            │  readdir                │
+       │                            │   ~/.mini-cc/skills/    │
+       │                            ├────────────────────────►│
+       │                            │◄────── entries ─────────┤
+       │                            │                         │
+       │                            │  for each entry that    │
+       │                            │  contains SKILL.md:     │
+       │                            │    Bun.file(SKILL.md)   │
+       │                            ├────────────────────────►│
+       │                            │◄──── markdown text ─────┤
+       │                            │    parseSkillFile       │
+       │                            │     (YAML + body)       │
+       │                            │                         │
+       │                            │  dedup: project > user  │
+       │                            │  sort by name           │
+       │◄────── Skill[] ────────────┤                         │
+       │                            │                         │
+       │  buildSkillTool(skills)    │                         │
+       │  assembleSystemPrompt({    │                         │
+       │    tools, skills, ... })   │                         │
+       │  new QueryEngine({         │                         │
+       │    tools, systemPrompt })  │                         │
+```
+
+Notes:
+- Project beats user on name conflict — first-wins dedup matches real CC
+  (`loadSkillsDir.ts:753-762`).
+- Missing `description` falls back to the first non-heading line of the
+  body (real CC: `loadSkillsDir.ts:208-214`).
+- The `Skill` tool is registered alongside `DEFAULT_TOOLS` only when
+  `skills.length > 0` — keeps the catalog clean for sessions with no
+  skills installed.
+- Skill **bodies** are NOT in the system prompt. The system prompt only
+  carries a `# Available skills` listing (name + description + optional
+  `when_to_use`); bodies live in the in-memory `Skill[]` and are spliced
+  into the conversation on demand. That's what keeps the system prompt
+  cacheable across turns.
+
+### Phase 2 — invocation (per turn)
+
+The model invokes a skill by calling `Skill(skill="<name>", args="<string>")`.
+The dispatcher renders the body (`$ARGUMENTS` + `$SKILL_DIR` substitution),
+returns a one-line `tool_result` ("Launching skill: …"), AND emits a
+follow-up user message carrying the rendered body. Diagram traces a turn
+that activates `write-greeting` and ends after one downstream tool call;
+real flows typically iterate further (e.g. Bash on `$SKILL_DIR/validate.sh`).
+
+```
+  USER                 MAIN (REPL)                QueryEngine                    Provider                   Local
+   │                        │                          │                             │                         │
+   │ prompt mentioning      │                          │                             │                         │
+   │ a skill                │                          │                             │                         │
+   ├───────────────────────►│                          │                             │                         │
+   │                        │  submitMessage(text)     │                             │                         │
+   │                        ├─────────────────────────►│                             │                         │
+   │                        │                          │    ① engine bookkeeping     │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │  sampleStream(...)          │                         │
+   │                        │                          ├────────────────────────────►│                         │
+   │                        │                          │                             │                         │
+   │                        │                          │◄── message_complete event ──┤                         │
+   │                        │                          │    stopReason: 'tool_use'   │                         │
+   │                        │                          │    ToolUse(Skill,           │                         │
+   │                        │                          │      { skill, args })       │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │    ② engine bookkeeping     │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │  Skill.call(input, ctx)     │                         │
+   │                        │                          │  (in-process; renders body, │                         │
+   │                        │                          │   returns content +         │                         │
+   │                        │                          │   injections[])             │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │    ③ engine bookkeeping     │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │  sampleStream(...)          │                         │
+   │                        │                          ├────────────────────────────►│                         │
+   │                        │                          │                             │                         │
+   │                        │                          │◄── message_complete event ──┤                         │
+   │                        │                          │    stopReason: 'tool_use'   │                         │
+   │                        │                          │    ToolUse(Write, {...})    │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │    ④ engine bookkeeping     │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │  tool.call(input, ctx)      │                         │
+   │                        │                          ├──────────────────────────────────────────────────────►│
+   │                        │                          │                             │     Bun.write(...)      │
+   │                        │                          │◄────────── result ─────────────────────────────────────┤
+   │                        │                          │                             │                         │
+   │                        │                          │    ⑤ ... iterations         │                         │
+   │                        │                          │       continue while model  │                         │
+   │                        │                          │       follows skill body    │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │  sampleStream(...)          │                         │
+   │                        │                          ├────────────────────────────►│                         │
+   │                        │                          │◄── message_complete event ──┤                         │
+   │                        │                          │    stopReason: 'stop'       │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │    ⑥ engine bookkeeping     │                         │
+   │                        │                          │                             │                         │
+   │                        │  AsyncGenerator done     │                             │                         │
+   │                        │◄─────────────────────────┤                             │                         │
+   │  '> ' prompt           │                          │                             │                         │
+   │◄───────────────────────┤                          │                             │                         │
+```
+
+**Engine bookkeeping** (same shape as the per-tool flow above; the special
+case is ③):
+
+- **①** Append `UserMessage` to `messages[]`. Create a fresh `AbortController`.
+- **②** Append `AssistantMessage` (`ToolUse(Skill, ...)`). Validate input
+      with Zod. Call `Skill.checkPermissions()`.
+- **③** **Skill dispatch is the special case.** `Skill.call()` runs entirely
+      in-process: resolves the named skill from the in-memory map, calls
+      `render(skill, args)` which substitutes `$ARGUMENTS` and `$SKILL_DIR`
+      in the body, and returns
+      `{ content: "Launching skill: …", injections: [{ role: 'user', text: <body> }] }`.
+      The dispatcher then **appends a `ToolMessage`** with the one-line
+      `ToolResult` (completing the 1:1 `tool_use ↔ tool_result` pairing
+      required by the canonical transcript invariant — `src/types.ts`
+      rule 5) — AND **appends a separate `UserMessage`** carrying the
+      injection text. Order is load-bearing: the ToolMessage MUST come
+      first; the injection arrives AFTER as a fresh user message, never
+      folded into the ToolMessage.
+- **④** Standard tool dispatch. Skill body typically directs the model to
+      call `Write`, `Bash` (e.g. on bundled scripts referenced via
+      `$SKILL_DIR`), etc. Each runs through the normal path with its own
+      permission checks.
+- **⑤** Iterations continue. The skill body remains visible in `messages[]`
+      for every subsequent sample call — that's why we never need to
+      re-inject.
+- **⑥** Final `AssistantMessage` with `stopReason='stop'`. Loop returns.
+
+**Final state of `messages[]`** — illustrative for `write-greeting` → Write →
+Bash → text:
+
+```
+[0] UserMessage       content=[TextBlock("Use write-greeting on /tmp/x.txt")]
+[1] AssistantMessage  content=[ToolUse(Skill, { skill: 'write-greeting', args: '/tmp/x.txt' })]
+[2] ToolMessage       content=[ToolResult("Launching skill: write-greeting")]
+[3] UserMessage       content=[TextBlock(<rendered SKILL.md body>)]                    ← injection
+[4] AssistantMessage  content=[ToolUse(Write, { file_path: '/tmp/x.txt', content: 'Hello, …!' })]
+[5] ToolMessage       content=[ToolResult("ok")]
+[6] AssistantMessage  content=[ToolUse(Bash, { command: 'bash $SKILL_DIR/validate.sh /tmp/x.txt' })]
+[7] ToolMessage       content=[ToolResult(<bash output>)]
+[8] AssistantMessage  content=[TextBlock("Wrote the greeting to /tmp/x.txt.")]
+```
+
+The injection at `[3]` is the load-bearing piece: skill content arrives
+in-conversation, on demand, without ever mutating the system prompt. That
+keeps the system prompt cacheable across turns and matches real CC's
+`newMessages` mechanism (`SkillTool.ts:728-755`).
+
 ## Provider selection
 
 - `MINI_CC_PROVIDER=anthropic` (default) — uses `ANTHROPIC_API_KEY` if set

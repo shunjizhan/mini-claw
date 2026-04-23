@@ -1,4 +1,5 @@
 import type { Tool } from './Tool';
+import type { Skill } from './skills/loader';
 
 const BASE_INSTRUCTION = `You are mini-claw, a concise coding assistant running in a terminal REPL.
 
@@ -15,6 +16,8 @@ export interface AssembleSystemPromptOptions {
   cwd: string;
   /** Optional memory content (e.g. loaded CLAUDE.md). */
   memory?: string | undefined;
+  /** Available skills (from src/skills/loader). Listed for model discovery. */
+  skills?: Skill[] | undefined;
 }
 
 /**
@@ -23,12 +26,21 @@ export interface AssembleSystemPromptOptions {
  * Layout:
  *   1. Base instruction (agent persona + rules)
  *   2. Tool reference (name + description per tool)
- *   3. Environment (cwd)
- *   4. Optional memory block (CLAUDE.md content, if present)
+ *   3. Available skills (if any) — name + description listing. Model
+ *      discovers skills here, then invokes them via the `Skill` tool.
+ *   4. Environment (cwd)
+ *   5. Optional memory block (CLAUDE.md content, if present)
  *
  * Providers translate this differently: Anthropic puts it in the top-level
  * `system` field; OpenAI prepends a role='system' message. The assembly
  * itself is provider-agnostic — pure text.
+ *
+ * The skills section mirrors real Claude Code's `prompt.ts:70–171`
+ * methodology: model sees the skill listing once, at turn 1. Skills are
+ * NOT re-injected per-turn; this preserves prompt caching and matches
+ * Anthropic's single-string `system` field. When the model decides to use
+ * a skill, it calls the Skill tool and the body is appended as a user
+ * message after the ToolMessage (see src/QueryEngine.ts).
  */
 export function assembleSystemPrompt(
   opts: AssembleSystemPromptOptions,
@@ -36,6 +48,11 @@ export function assembleSystemPrompt(
   const parts: string[] = [BASE_INSTRUCTION];
 
   parts.push('', '# Tools', formatTools(opts.tools));
+
+  if (opts.skills && opts.skills.length > 0) {
+    parts.push('', '# Available skills', formatSkills(opts.skills));
+  }
+
   parts.push('', '# Environment', `- cwd: ${opts.cwd}`);
 
   if (opts.memory && opts.memory.trim().length > 0) {
@@ -59,6 +76,23 @@ export function formatTools(tools: Tool[]): string {
       if (t.isDestructive) flags.push('destructive');
       const flagStr = flags.length > 0 ? ` [${flags.join(', ')}]` : '';
       return `- **${t.name}**${flagStr}: ${t.description}`;
+    })
+    .join('\n');
+}
+
+/**
+ * Render the discovered skills as a bulleted `name: description` list —
+ * matches real CC's `formatCommandsWithinBudget()` shape (minus the
+ * truncation-by-budget logic, which we skip for Tier 3 MVP).
+ *
+ * When a skill provides `when_to_use`, append it as a second line for extra
+ * context — helps the model pick the right skill when names are ambiguous.
+ */
+export function formatSkills(skills: Skill[]): string {
+  return skills
+    .map((s) => {
+      const first = `- **${s.name}**: ${s.description}`;
+      return s.whenToUse ? `${first}\n  (use when: ${s.whenToUse})` : first;
     })
     .join('\n');
 }

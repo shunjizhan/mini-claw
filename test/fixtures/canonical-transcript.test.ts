@@ -57,20 +57,33 @@ describe('assertCanonicalTranscript', () => {
     expect(() => assertCanonicalTranscript(msgs)).toThrow(/rule 2/);
   });
 
-  test('rule 2: user following tool', () => {
+  test('valid: tool → user (skill injection) → assistant', () => {
+    // Skill-style injection from real CC's newMessages mechanism:
+    // a synthetic user message appended after the ToolMessage carries the
+    // skill body; the next assistant message reads it on its own turn.
     const msgs: Message[] = [
-      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'user', content: [{ type: 'text', text: 'use skill X' }] },
       {
         role: 'assistant',
-        content: [{ type: 'tool_use', id: 't1', name: 'X', input: {} }],
+        content: [{ type: 'tool_use', id: 't1', name: 'Skill', input: {} }],
       },
       {
         role: 'tool',
-        content: [{ type: 'tool_result', toolUseId: 't1', content: 'r' }],
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 't1',
+            content: 'Launching skill: X',
+          },
+        ],
       },
-      { role: 'user', content: [{ type: 'text', text: 'bad' }] },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: '(skill body injected)' }],
+      },
+      { role: 'assistant', content: [{ type: 'text', text: 'on it' }] },
     ];
-    expect(() => assertCanonicalTranscript(msgs)).toThrow(/rule 2/);
+    expect(() => assertCanonicalTranscript(msgs)).not.toThrow();
   });
 
   test('rule 3: empty assistant', () => {

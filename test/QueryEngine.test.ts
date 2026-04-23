@@ -367,6 +367,68 @@ describe('QueryEngine', () => {
     }
   });
 
+  test('skill-style injection: tool returns { content, injections } → user message appended after tool message', async () => {
+    // Build a tool that mimics the Skill tool's return shape: plain string
+    // ToolResult + a separate user-message injection. QueryEngine should
+    // end the turn with messages = [user, assistant(tool_use), tool, user(injection), assistant].
+    const { buildTool } = await import('../src/Tool');
+    const { z } = await import('zod');
+    const injectorTool = buildTool({
+      name: 'Injector',
+      description: 'test-only tool that injects a user message',
+      inputSchema: z.object({}),
+      async call() {
+        return {
+          content: 'Launching injector',
+          injections: [{ role: 'user' as const, text: 'injected-body' }],
+        };
+      },
+    });
+
+    const provider = new FakeProvider([
+      withToolUse('', [
+        { id: 'tu_1', name: 'Injector', input: {} },
+      ]),
+      textOnly('done'),
+    ]);
+    const engine = new QueryEngine({
+      provider,
+      tools: [injectorTool],
+      systemPrompt: 'sys',
+      cwd: '/tmp',
+    });
+
+    await drain(engine.submitMessage('use injector'));
+
+    // messages[0] user prompt
+    // messages[1] assistant(tool_use Injector)
+    // messages[2] tool(ToolResult "Launching injector")
+    // messages[3] user(injection "injected-body")   ← new
+    // messages[4] assistant("done")
+    expect(engine.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'user',
+      'assistant',
+    ]);
+    const injected = engine.messages[3] as { content: { text: string }[] };
+    expect(injected.content[0]?.text).toBe('injected-body');
+
+    // Second sample must have seen the injection in its messages[] input.
+    // The fake provider captures messages; the second call's input should
+    // include the injected user message.
+    const secondCallMessages = provider.capturedMessages[1]!;
+    expect(secondCallMessages.at(-1)).toMatchObject({
+      role: 'user',
+      content: [{ type: 'text', text: 'injected-body' }],
+    });
+
+    // Canonical transcript helper allows tool → user (rule 6 / skill
+    // injection). This fires the updated assertion path.
+    assertCanonicalTranscript(engine.messages);
+  });
+
   test('second submitMessage after previous succeeds preserves history', async () => {
     const provider = new FakeProvider([textOnly('one'), textOnly('two')]);
     const engine = new QueryEngine({

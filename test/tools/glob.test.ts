@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { globTool } from '../../src/tools/glob';
 import type { ToolContext } from '../../src/Tool';
+import { asText } from '../fixtures/tool-helpers';
 
 function ctx(cwd: string): ToolContext {
   return { cwd, signal: new AbortController().signal };
@@ -26,7 +27,7 @@ describe('globTool', () => {
     try {
       await setupTree(cwd);
       const out = await globTool.call({ pattern: '**/*.ts' }, ctx(cwd));
-      const lines = out.split('\n');
+      const lines = asText(out).split('\n');
       expect(lines).toContain('src/index.ts');
       expect(lines).toContain('src/tools/a.ts');
       expect(lines).toContain('src/tools/b.ts');
@@ -47,7 +48,7 @@ describe('globTool', () => {
         { pattern: 'src/tools/*.ts' },
         ctx(cwd),
       );
-      const lines = out.split('\n');
+      const lines = asText(out).split('\n');
       expect(lines).toEqual(['src/tools/a.ts', 'src/tools/b.ts']);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
@@ -87,7 +88,7 @@ describe('globTool', () => {
         { pattern: '*.ts', path: 'src/tools' },
         ctx(cwd),
       );
-      const lines = out.split('\n');
+      const lines = asText(out).split('\n');
       // Relative to the scanned root (src/tools), so entries are just a.ts, b.ts
       expect(lines).toEqual(['a.ts', 'b.ts']);
     } finally {

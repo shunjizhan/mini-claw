@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { grepTool, __resetRgCacheForTests } from '../../src/tools/grep';
 import type { ToolContext } from '../../src/Tool';
+import { asText } from '../fixtures/tool-helpers';
 
 function ctx(cwd: string): ToolContext {
   return { cwd, signal: new AbortController().signal };
@@ -66,7 +67,7 @@ describe.skipIf(!HAVE_RG)('grepTool', () => {
         ctx(cwd),
       );
       // Matches 'beta' and 'Beta'
-      expect(out.match(/beta/gi)?.length ?? 0).toBeGreaterThan(1);
+      expect(asText(out).match(/beta/gi)?.length ?? 0).toBeGreaterThan(1);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

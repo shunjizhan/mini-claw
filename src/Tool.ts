@@ -26,19 +26,45 @@ export type PermissionResult =
   | { behavior: 'ask'; prompt: string };
 
 /**
+ * An injection the dispatcher appends as a fresh user message AFTER the
+ * ToolMessage. Used by the Skill tool (Tier 3) to splice the skill's body
+ * into the conversation without mutating the system prompt — matches real
+ * Claude Code's `newMessages` mechanism from `SkillTool.ts:728–755` +
+ * `toolExecution.ts:1566–1570`.
+ *
+ * Deliberately narrow (only `role: 'user'` + `text`) — real CC's newMessages
+ * can be user/attachment/system; we don't need the wider shape in Tier 3.
+ */
+export interface ToolInjection {
+  role: 'user';
+  text: string;
+}
+
+/**
+ * What `Tool.call()` returns. Plain string for the common case; the object
+ * form is an escape hatch for tools that need to inject follow-up messages
+ * after their tool_result (currently: Skill). The dispatcher normalizes
+ * `content` into the ToolResult and collects `injections` across the turn.
+ */
+export type ToolCallResult =
+  | string
+  | { content: string; injections?: ToolInjection[] };
+
+/**
  * A tool the LLM can invoke. Parameterized by the Zod schema for its input —
  * the dispatcher validates raw JSON input against `inputSchema` before calling
  * `call()`, so `call()` can trust the typed input.
  *
- * `call()` returns a string (Tier 1 keeps this simple; widen to
- * `string | ContentBlock[]` if a tool ever needs structured output).
+ * `call()` returns either a plain string (becomes the ToolResult content) or
+ * a `{ content, injections }` record so Skill-like tools can append user
+ * messages after the ToolMessage without mutating the system prompt.
  */
 export interface Tool<I extends z.ZodTypeAny = z.ZodTypeAny> {
   name: string;
   description: string;
   inputSchema: I;
 
-  call(input: z.infer<I>, ctx: ToolContext): Promise<string>;
+  call(input: z.infer<I>, ctx: ToolContext): Promise<ToolCallResult>;
 
   /**
    * Permission hook. Defaults (via buildTool) to always-allow in Tier 1.

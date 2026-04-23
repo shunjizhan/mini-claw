@@ -4,9 +4,11 @@ import { Command } from 'commander';
 
 import { QueryEngine } from './QueryEngine';
 import { DEFAULT_TOOLS } from './tools/index';
+import { buildSkillTool } from './tools/skill';
 import { resolveBaseURL, selectProvider } from './providers/index';
 import { assembleSystemPrompt, loadMemory } from './prompt';
 import { createReadlinePermissionPrompter } from './permissions';
+import { loadSkills } from './skills/loader';
 import { ProviderProtocolError } from './types';
 
 async function main(): Promise<void> {
@@ -31,9 +33,16 @@ async function main(): Promise<void> {
   const cwd = cli.cwd ?? process.cwd();
 
   const provider = selectProvider();
-  const tools = DEFAULT_TOOLS;
   const memory = await loadMemory(cwd);
-  const systemPrompt = assembleSystemPrompt({ tools, cwd, memory });
+  const skills = await loadSkills({ cwd });
+  // Skill tool is only registered when at least one skill is discoverable —
+  // matches real CC's behavior of not exposing the tool when the skill set
+  // is empty (avoids the model inventing skill names).
+  const tools =
+    skills.length > 0
+      ? [...DEFAULT_TOOLS, buildSkillTool(skills)]
+      : DEFAULT_TOOLS;
+  const systemPrompt = assembleSystemPrompt({ tools, cwd, memory, skills });
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -72,8 +81,12 @@ async function main(): Promise<void> {
 
   const provName = process.env['MINI_CC_PROVIDER'] ?? 'anthropic';
   const baseURL = resolveBaseURL() ?? '(SDK default)';
+  const skillNote =
+    skills.length > 0
+      ? ` | skills=${skills.length} (${skills.map((s) => s.name).join(', ')})`
+      : '';
   console.log(
-    `mini-claw | provider=${provName} | model=${provider.model} | baseURL=${baseURL} | cwd=${cwd}\n` +
+    `mini-claw | provider=${provName} | model=${provider.model} | baseURL=${baseURL} | cwd=${cwd}${skillNote}\n` +
       `Ctrl+C aborts the current turn; Ctrl+D exits.`,
   );
   rl.prompt();

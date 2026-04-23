@@ -8,7 +8,7 @@ import type {
   Usage,
 } from './types';
 import { ProviderProtocolError } from './types';
-import type { Tool, ToolContext } from './Tool';
+import type { Tool, ToolContext, ToolInjection } from './Tool';
 import type { LLMProvider } from './providers/index';
 import type { PermissionPrompter } from './permissions';
 
@@ -153,14 +153,31 @@ export class QueryEngine {
         }
 
         const toolResults: ToolResult[] = [];
+        const injections: ToolInjection[] = [];
         for (const tu of toolUses) {
-          toolResults.push(await this.dispatchTool(tu, ctx));
+          const { result, injections: injs } = await this.dispatchTool(tu, ctx);
+          toolResults.push(result);
+          if (injs) injections.push(...injs);
           if (signal.aborted) {
             throw new DOMException('Aborted', 'AbortError');
           }
         }
 
         this.mutableMessages.push({ role: 'tool', content: toolResults });
+
+        // Skill-style follow-up injection: if any tool returned extra user
+        // messages alongside its ToolResult (per the `newMessages` mechanism
+        // in real CC's SkillTool — src/tools/SkillTool/SkillTool.ts:728–755),
+        // append them now so the next sample sees the skill body in-context.
+        // Deliberately appended AFTER the ToolMessage, never inside it, to
+        // preserve the canonical transcript invariant's 1:1 tool_use ↔
+        // tool_result pairing (rule 5 in src/types.ts).
+        if (injections.length > 0) {
+          this.mutableMessages.push({
+            role: 'user',
+            content: injections.map((inj) => ({ type: 'text', text: inj.text })),
+          });
+        }
       }
     } catch (err) {
       this.mutableMessages.length = snapshot;
@@ -171,25 +188,29 @@ export class QueryEngine {
   private async dispatchTool(
     tu: ToolUse,
     ctx: ToolContext,
-  ): Promise<ToolResult> {
+  ): Promise<{ result: ToolResult; injections?: ToolInjection[] }> {
     const tool = this.tools.find((t) => t.name === tu.name);
     if (!tool) {
       const available = this.tools.map((t) => t.name).join(', ');
       return {
-        type: 'tool_result',
-        toolUseId: tu.id,
-        content: `Unknown tool: ${tu.name}. Available tools: ${available}`,
-        isError: true,
+        result: {
+          type: 'tool_result',
+          toolUseId: tu.id,
+          content: `Unknown tool: ${tu.name}. Available tools: ${available}`,
+          isError: true,
+        },
       };
     }
 
     const parsed = tool.inputSchema.safeParse(tu.input);
     if (!parsed.success) {
       return {
-        type: 'tool_result',
-        toolUseId: tu.id,
-        content: `Invalid input for ${tu.name}: ${parsed.error.message}`,
-        isError: true,
+        result: {
+          type: 'tool_result',
+          toolUseId: tu.id,
+          content: `Invalid input for ${tu.name}: ${parsed.error.message}`,
+          isError: true,
+        },
       };
     }
 
@@ -197,10 +218,12 @@ export class QueryEngine {
       const perm = await tool.checkPermissions(parsed.data, ctx);
       if (perm.behavior === 'deny') {
         return {
-          type: 'tool_result',
-          toolUseId: tu.id,
-          content: `Permission denied: ${perm.reason}`,
-          isError: true,
+          result: {
+            type: 'tool_result',
+            toolUseId: tu.id,
+            content: `Permission denied: ${perm.reason}`,
+            isError: true,
+          },
         };
       }
       if (perm.behavior === 'ask') {
@@ -213,10 +236,12 @@ export class QueryEngine {
           );
           if (decision === 'deny') {
             return {
-              type: 'tool_result',
-              toolUseId: tu.id,
-              content: `Permission denied by user`,
-              isError: true,
+              result: {
+                type: 'tool_result',
+                toolUseId: tu.id,
+                content: `Permission denied by user`,
+                isError: true,
+              },
             };
           }
           if (decision === 'allow-always') {
@@ -228,25 +253,37 @@ export class QueryEngine {
       }
     } catch (err) {
       return {
-        type: 'tool_result',
-        toolUseId: tu.id,
-        content: `Permission check failed for ${tu.name}: ${errMsg(err)}`,
-        isError: true,
+        result: {
+          type: 'tool_result',
+          toolUseId: tu.id,
+          content: `Permission check failed for ${tu.name}: ${errMsg(err)}`,
+          isError: true,
+        },
       };
     }
 
     try {
       const output = await tool.call(parsed.data, ctx);
-      return { type: 'tool_result', toolUseId: tu.id, content: output };
+      // Normalize ToolCallResult: tools can return a plain string (becomes
+      // the ToolResult.content) or { content, injections? } for Skill-style
+      // tools that need to append user messages after the ToolMessage.
+      const content = typeof output === 'string' ? output : output.content;
+      const injections = typeof output === 'string' ? undefined : output.injections;
+      return {
+        result: { type: 'tool_result', toolUseId: tu.id, content },
+        ...(injections && injections.length > 0 ? { injections } : {}),
+      };
     } catch (err) {
       if (ctx.signal.aborted || isAbortError(err)) {
         throw err;
       }
       return {
-        type: 'tool_result',
-        toolUseId: tu.id,
-        content: `Tool ${tu.name} failed: ${errMsg(err)}`,
-        isError: true,
+        result: {
+          type: 'tool_result',
+          toolUseId: tu.id,
+          content: `Tool ${tu.name} failed: ${errMsg(err)}`,
+          isError: true,
+        },
       };
     }
   }

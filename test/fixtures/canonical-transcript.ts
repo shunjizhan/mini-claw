@@ -6,8 +6,11 @@ import type { Message, ToolUse } from '../../src/types';
  * you exactly what broke.
  *
  *   1. First message (if any) is role='user'.
- *   2. Alternation: user → assistant → (tool → assistant)* → user → ...
- *      No back-to-back same-role, no tool→user, no user→tool.
+ *   2. Alternation: user → assistant → (tool → (user|assistant))* → user → ...
+ *      No back-to-back same-role. The `tool → user` continuation is valid
+ *      when (and only when) the user message is a synthetic injection
+ *      appended by a tool (matches rule 6 in src/types.ts — the Skill tool
+ *      injection mechanic, mirroring real CC's newMessages pattern).
  *   3. Assistant messages are non-empty (at least one TextBlock or ToolUse).
  *   4. Tool messages contain only ToolResult blocks.
  *   5. Tool messages correspond 1:1 with their preceding assistant's
@@ -37,9 +40,13 @@ export function assertCanonicalTranscript(
 
     // Rule 2 — alternation
     if (prev !== null) {
-      if (msg.role === 'user' && prev.role !== 'assistant') {
+      if (
+        msg.role === 'user' &&
+        prev.role !== 'assistant' &&
+        prev.role !== 'tool'
+      ) {
         throw new Error(
-          `canonical transcript: rule 2 — user at index ${i} follows ${prev.role} (must follow assistant)`,
+          `canonical transcript: rule 2 — user at index ${i} follows ${prev.role} (must follow assistant or tool)`,
         );
       }
       if (msg.role === 'assistant' && prev.role === 'assistant') {
