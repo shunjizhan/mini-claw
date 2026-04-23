@@ -41,6 +41,99 @@ src/
 test/                   # mirrors src/ layout
 ```
 
+## High-level architectural flow
+
+One user prompt produces one or more sampler iterations that `QueryEngine`
+drives. Text streams live; tool calls buffer until the provider finishes its
+turn, then dispatch happens between sampler calls. Diagram below traces a
+prompt that triggers one tool call (e.g. *"read hello.txt"*).
+
+**Key StreamEvent types** (defined in `src/types.ts`):
+
+- `text_delta` — a token chunk, passed straight through to stdout.
+- `message_complete` — the provider finished its turn. Carries the fully
+  assembled `AssistantMessage`, a `stopReason`, and token `usage`. `stopReason`
+  tells `QueryEngine` what to do next:
+  - `'tool_use'` — the model requested tools; dispatch them and loop.
+  - `'stop'` — the turn is done; return.
+
+```
+  USER                 MAIN (REPL)                QueryEngine                    Provider                   Local
+   │                        │                          │                             │                         │
+   │ prompt                 │                          │                             │                         │
+   ├───────────────────────►│                          │                             │                         │
+   │                        │  submitMessage(text)     │                             │                         │
+   │                        ├─────────────────────────►│                             │                         │
+   │                        │                          │    ① engine bookkeeping     │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │  sampleStream(...)          │                         │
+   │                        │                          ├────────────────────────────►│                         │
+   │                        │                          │                             │                         │
+   │                        │                          │◄─── text_delta event ───────┤   (×N)                  │
+   │                        │  text_delta (yielded)    │                             │                         │
+   │                        │◄─────────────────────────┤                             │                         │
+   │  stdout prints         │                          │                             │                         │
+   │◄───────────────────────┤                          │                             │                         │
+   │                        │                          │◄── message_complete event ──┤                         │
+   │                        │                          │    stopReason: 'tool_use'   │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │    ② engine bookkeeping     │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │  tool.call(input, context)  │                         │
+   │                        │                          ├──────────────────────────────────────────────────────►│
+   │                        │                          │                             │       execute tool:     │
+   │                        │                          │                             │         Bun.file        │
+   │                        │                          │                             │         Bun.spawn       │
+   │                        │                          │                             │                         │
+   │                        │                          │◄───────── result (string) ──────────────────────────┤
+   │                        │                          │                             │                         │
+   │                        │                          │    ③ engine bookkeeping     │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │  sampleStream(...)          │                         │
+   │                        │                          ├────────────────────────────►│                         │
+   │                        │                          │                             │                         │
+   │                        │                          │◄─── text_delta event ───────┤   (×M)                  │
+   │                        │  text_delta (yielded)    │                             │                         │
+   │                        │◄─────────────────────────┤                             │                         │
+   │  stdout prints         │                          │                             │                         │
+   │◄───────────────────────┤                          │                             │                         │
+   │                        │                          │◄── message_complete event ──┤                         │
+   │                        │                          │    stopReason: 'stop'       │                         │
+   │                        │                          │                             │                         │
+   │                        │                          │    ④ engine bookkeeping     │                         │
+   │                        │                          │                             │                         │
+   │                        │  AsyncGenerator done     │                             │                         │
+   │                        │◄─────────────────────────┤                             │                         │
+   │  '> ' prompt           │                          │                             │                         │
+   │◄───────────────────────┤                          │                             │                         │
+```
+
+**Engine bookkeeping** (what `QueryEngine` does between inter-actor messages):
+
+- **①** Append `UserMessage` to `messages[]`. Create a fresh `AbortController`.
+- **②** Append `AssistantMessage` (text + `ToolUse` blocks) to `messages[]`.
+      Validate the tool-call input with Zod. Call `tool.checkPermissions()`.
+- **③** Wrap the tool result in a `ToolResult` block. Append a `ToolMessage`
+      (`role='tool'`) to `messages[]`. Re-enter the loop — next
+      `sampleStream(...)` goes out with the updated history.
+- **④** Append the final `AssistantMessage` to `messages[]`. Since
+      `stopReason='stop'`, the loop returns and the generator ends.
+
+**Final state of `messages[]`** — four entries, canonical transcript
+invariant (see `src/types.ts`):
+
+```
+[0] UserMessage       role='user'       content=[TextBlock("read hello.txt")]
+[1] AssistantMessage  role='assistant'  content=[TextBlock("Reading now."), ToolUse(Read, {...})]
+[2] ToolMessage       role='tool'       content=[ToolResult("1\thello world\n")]
+[3] AssistantMessage  role='assistant'  content=[TextBlock("The file says 'hello world'.")]
+```
+
+Zero tool calls (pure-text answer) collapses to `[UserMessage, AssistantMessage]`.
+N tool calls expand to `[UserMessage, (AssistantMessage, ToolMessage)×N, AssistantMessage]`.
+On abort at any point, the entire buffered turn is discarded back to the
+pre-user-message state.
+
 ## Provider selection
 
 - `MINI_CC_PROVIDER=anthropic` (default) — uses `ANTHROPIC_API_KEY` if set

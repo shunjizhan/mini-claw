@@ -4,15 +4,14 @@ import { AnthropicProvider } from './anthropic';
 import { OpenAIProvider } from './openai';
 
 /**
- * Default API base URL for both providers. Points at a local proxy; set
- * MINI_CC_BASE_URL to override (e.g. https://api.anthropic.com for direct
- * access).
+ * Resolve MINI_CC_BASE_URL. Returns `undefined` when no override is set so
+ * each SDK falls back to its own official default (api.anthropic.com for
+ * Anthropic, api.openai.com/v1 for OpenAI). Set MINI_CC_BASE_URL to point
+ * at a local proxy (e.g. http://localhost:8317) when you want to intercept
+ * requests.
  */
-export const DEFAULT_BASE_URL = 'http://localhost:8317';
-
-/** Resolve MINI_CC_BASE_URL with the localhost default. */
-export function resolveBaseURL(override?: string): string {
-  return override ?? process.env['MINI_CC_BASE_URL'] ?? DEFAULT_BASE_URL;
+export function resolveBaseURL(override?: string): string | undefined {
+  return override ?? process.env['MINI_CC_BASE_URL'] ?? undefined;
 }
 
 /**
@@ -45,9 +44,8 @@ export interface LLMProvider {
  * Resolve the active provider from env.
  *   MINI_CC_PROVIDER=anthropic (default) | openai
  *   MINI_CC_MODEL=... (optional override; provider-specific default otherwise)
- *   MINI_CC_BASE_URL=... (default http://localhost:8317 — point at a local
- *     proxy; set to https://api.anthropic.com or https://api.openai.com/v1
- *     for direct access)
+ *   MINI_CC_BASE_URL=... (optional; defaults to each SDK's official URL.
+ *     Set to http://localhost:8317 or similar to route through a local proxy.)
  */
 export function selectProvider(): LLMProvider {
   const name = (process.env['MINI_CC_PROVIDER'] ?? 'anthropic').toLowerCase();

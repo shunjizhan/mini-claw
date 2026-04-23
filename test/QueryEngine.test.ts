@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { QueryEngine } from '../src/QueryEngine';
 import { readTool, writeTool } from '../src/tools/index';
 import type { StreamEvent, ToolMessage } from '../src/types';
+import { assertCanonicalTranscript } from './fixtures/canonical-transcript';
 import {
   AbortingProvider,
   FakeProvider,
@@ -41,6 +42,7 @@ describe('QueryEngine', () => {
     expect(engine.messages).toHaveLength(2);
     expect(engine.messages[0]?.role).toBe('user');
     expect(engine.messages[1]?.role).toBe('assistant');
+    assertCanonicalTranscript(engine.messages);
   });
 
   test('single tool call: dispatch + loop + final text', async () => {
@@ -75,6 +77,7 @@ describe('QueryEngine', () => {
       expect(toolMsg.content).toHaveLength(1);
       expect(toolMsg.content[0]?.isError).toBeUndefined();
       expect(await Bun.file(target).text()).toBe('hi');
+      assertCanonicalTranscript(engine.messages);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -106,6 +109,7 @@ describe('QueryEngine', () => {
       expect(toolMsg.content[1]?.toolUseId).toBe('tu_2');
       expect(await Bun.file(a).text()).toBe('A');
       expect(await Bun.file(b).text()).toBe('B');
+      assertCanonicalTranscript(engine.messages);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -128,6 +132,7 @@ describe('QueryEngine', () => {
     expect(toolMsg.content[0]?.isError).toBe(true);
     expect(toolMsg.content[0]?.content).toContain('Unknown tool');
     expect(engine.messages).toHaveLength(4);
+    assertCanonicalTranscript(engine.messages);
   });
 
   test('Zod validation failure → ToolResult{isError:true}', async () => {
@@ -148,6 +153,7 @@ describe('QueryEngine', () => {
     const toolMsg = engine.messages[2] as ToolMessage;
     expect(toolMsg.content[0]?.isError).toBe(true);
     expect(toolMsg.content[0]?.content).toMatch(/Invalid input/);
+    assertCanonicalTranscript(engine.messages);
   });
 
   test('tool throws → ToolResult{isError:true}, loop survives', async () => {
@@ -172,6 +178,7 @@ describe('QueryEngine', () => {
     const toolMsg = engine.messages[2] as ToolMessage;
     expect(toolMsg.content[0]?.isError).toBe(true);
     expect(engine.messages).toHaveLength(4);
+    assertCanonicalTranscript(engine.messages);
   });
 
   test('usage accumulates across turns', async () => {
@@ -190,6 +197,7 @@ describe('QueryEngine', () => {
     expect(engine.usage.inputTokens).toBe(30);
     expect(engine.usage.outputTokens).toBe(13);
     expect(engine.messages).toHaveLength(4);
+    assertCanonicalTranscript(engine.messages);
   });
 
   test('abort mid-stream: messages[] rolled back to pre-turn snapshot', async () => {
@@ -201,6 +209,8 @@ describe('QueryEngine', () => {
     });
     await expect(drain(engine.submitMessage('x'))).rejects.toThrow();
     expect(engine.messages).toHaveLength(0);
+    // Post-rollback state is still canonical (empty array trivially valid).
+    assertCanonicalTranscript(engine.messages);
   });
 
   test('second submitMessage after previous succeeds preserves history', async () => {
@@ -220,5 +230,6 @@ describe('QueryEngine', () => {
       'user',
       'assistant',
     ]);
+    assertCanonicalTranscript(engine.messages);
   });
 });

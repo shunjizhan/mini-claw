@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 
-import { DEFAULT_BASE_URL, resolveBaseURL } from '../../src/providers/index';
+import { resolveBaseURL } from '../../src/providers/index';
 
 describe('resolveBaseURL', () => {
   const original = process.env['MINI_CC_BASE_URL'];
@@ -17,9 +17,8 @@ describe('resolveBaseURL', () => {
     }
   });
 
-  test('defaults to localhost:8317', () => {
-    expect(resolveBaseURL()).toBe('http://localhost:8317');
-    expect(DEFAULT_BASE_URL).toBe('http://localhost:8317');
+  test('returns undefined when nothing set (SDK defaults win)', () => {
+    expect(resolveBaseURL()).toBeUndefined();
   });
 
   test('picks up env override', () => {

@@ -32,7 +32,8 @@ export interface OpenAIProviderOptions {
  * We accumulate per-index tool-call state, parse arguments at stream end,
  * and emit one atomic `message_complete`. If arguments fail JSON.parse
  * we raise ProviderProtocolError so the loop can drop the turn rather
- * than invent a tool result.
+ * than invent a tool result. All translation logic lives in
+ * `translateOpenAIStream` so it's testable without mocking the SDK client.
  */
 export class OpenAIProvider implements LLMProvider {
   private readonly client: OpenAI;
@@ -46,7 +47,10 @@ export class OpenAIProvider implements LLMProvider {
     // follows the Anthropic shape (host only), so we append /v1 here when
     // the caller's URL doesn't already carry a /vN segment.
     const baseURL = ensureVersionPrefix(resolveBaseURL(opts.baseURL));
-    this.client = new OpenAI({ apiKey, baseURL });
+    this.client = new OpenAI({
+      apiKey,
+      ...(baseURL ? { baseURL } : {}),
+    });
     this.model = opts.model ?? process.env['MINI_CC_MODEL'] ?? DEFAULT_MODEL;
   }
 
@@ -70,92 +74,113 @@ export class OpenAIProvider implements LLMProvider {
       { signal },
     );
 
-    let textBuffer = '';
-    const toolAccum = new Map<
-      number,
-      { id: string; name: string; argsJson: string }
-    >();
-    let stopReason: StopReason = 'stop';
-    const usage: Usage = { inputTokens: 0, outputTokens: 0 };
-
-    for await (const chunk of stream) {
-      const choice = chunk.choices[0];
-      if (choice) {
-        const delta = choice.delta;
-        if (typeof delta.content === 'string' && delta.content.length > 0) {
-          textBuffer += delta.content;
-          yield { type: 'text_delta', text: delta.content };
-        }
-        if (delta.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            const idx = tc.index ?? 0;
-            let state = toolAccum.get(idx);
-            if (!state) {
-              state = { id: '', name: '', argsJson: '' };
-              toolAccum.set(idx, state);
-            }
-            if (tc.id) state.id = tc.id;
-            if (tc.function?.name) state.name = tc.function.name;
-            if (tc.function?.arguments) state.argsJson += tc.function.arguments;
-          }
-        }
-        if (choice.finish_reason) {
-          stopReason = normalizeOpenAIStopReason(choice.finish_reason);
-        }
-      }
-      if (chunk.usage) {
-        usage.inputTokens = chunk.usage.prompt_tokens ?? 0;
-        usage.outputTokens = chunk.usage.completion_tokens ?? 0;
-      }
-    }
-
-    const content: Array<TextBlock | ToolUse> = [];
-    if (textBuffer.length > 0) {
-      content.push({ type: 'text', text: textBuffer });
-    }
-    const sortedIndices = [...toolAccum.keys()].sort((a, b) => a - b);
-    for (const idx of sortedIndices) {
-      const state = toolAccum.get(idx);
-      if (!state) continue;
-      let input: Record<string, unknown>;
-      try {
-        input =
-          state.argsJson.length > 0
-            ? (JSON.parse(state.argsJson) as Record<string, unknown>)
-            : {};
-      } catch (err) {
-        throw new ProviderProtocolError(
-          `OpenAI returned tool_call with malformed JSON arguments (tool=${state.name}, id=${state.id}): ${state.argsJson}`,
-          err,
-        );
-      }
-      content.push({
-        type: 'tool_use',
-        id: state.id,
-        name: state.name,
-        input,
-      });
-    }
-
-    const assistantMessage: AssistantMessage = { role: 'assistant', content };
-    yield { type: 'message_complete', assistantMessage, stopReason, usage };
+    yield* translateOpenAIStream(stream);
   }
 }
 
+// ========== Translation (pure; exported for unit tests) ==========
+
 /**
- * Append `/v1` to a URL when its path doesn't already end in a `/vN`
- * version segment. Leaves `https://api.openai.com/v1` and
- * `https://custom.proxy/v2` untouched; turns `http://localhost:8317` into
- * `http://localhost:8317/v1`. Exported for testing.
+ * Consume raw OpenAI ChatCompletionChunks and yield neutral StreamEvents.
+ *
+ * State machine:
+ *   - For each chunk, the first choice's `delta.content` is yielded as a
+ *     text_delta and buffered into the final text content block.
+ *   - `delta.tool_calls[].function.{name,arguments}` fragments accumulate
+ *     per tool-call index into a pending map.
+ *   - `finish_reason` on any choice normalizes to our neutral stopReason.
+ *   - `chunk.usage` (only emitted when stream_options.include_usage: true,
+ *     and typically on the final chunk) replaces the running usage total.
+ *
+ * Once the stream ends, we JSON.parse each tool-call's buffered arguments
+ * into a structured `ToolUse.input`. Parse failure → ProviderProtocolError.
  */
-export function ensureVersionPrefix(baseURL: string): string {
+export async function* translateOpenAIStream(
+  chunks: AsyncIterable<OpenAI.ChatCompletionChunk>,
+): AsyncGenerator<StreamEvent, void, unknown> {
+  let textBuffer = '';
+  const toolAccum = new Map<
+    number,
+    { id: string; name: string; argsJson: string }
+  >();
+  let stopReason: StopReason = 'stop';
+  const usage: Usage = { inputTokens: 0, outputTokens: 0 };
+
+  for await (const chunk of chunks) {
+    const choice = chunk.choices[0];
+    if (choice) {
+      const delta = choice.delta;
+      if (typeof delta.content === 'string' && delta.content.length > 0) {
+        textBuffer += delta.content;
+        yield { type: 'text_delta', text: delta.content };
+      }
+      if (delta.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          let state = toolAccum.get(idx);
+          if (!state) {
+            state = { id: '', name: '', argsJson: '' };
+            toolAccum.set(idx, state);
+          }
+          if (tc.id) state.id = tc.id;
+          if (tc.function?.name) state.name = tc.function.name;
+          if (tc.function?.arguments) state.argsJson += tc.function.arguments;
+        }
+      }
+      if (choice.finish_reason) {
+        stopReason = normalizeOpenAIStopReason(choice.finish_reason);
+      }
+    }
+    if (chunk.usage) {
+      usage.inputTokens = chunk.usage.prompt_tokens ?? 0;
+      usage.outputTokens = chunk.usage.completion_tokens ?? 0;
+    }
+  }
+
+  const content: Array<TextBlock | ToolUse> = [];
+  if (textBuffer.length > 0) {
+    content.push({ type: 'text', text: textBuffer });
+  }
+  const sortedIndices = [...toolAccum.keys()].sort((a, b) => a - b);
+  for (const idx of sortedIndices) {
+    const state = toolAccum.get(idx);
+    if (!state) continue;
+    let input: Record<string, unknown>;
+    try {
+      input =
+        state.argsJson.length > 0
+          ? (JSON.parse(state.argsJson) as Record<string, unknown>)
+          : {};
+    } catch (err) {
+      throw new ProviderProtocolError(
+        `OpenAI returned tool_call with malformed JSON arguments (tool=${state.name}, id=${state.id}): ${state.argsJson}`,
+        err,
+      );
+    }
+    content.push({
+      type: 'tool_use',
+      id: state.id,
+      name: state.name,
+      input,
+    });
+  }
+
+  const assistantMessage: AssistantMessage = { role: 'assistant', content };
+  yield { type: 'message_complete', assistantMessage, stopReason, usage };
+}
+
+/**
+ * Append `/v1` to a URL when its path doesn't already end in a `/vN` version
+ * segment. Passes `undefined` through unchanged (so the OpenAI SDK can pick
+ * its own default when MINI_CC_BASE_URL is unset). Exported for testing.
+ */
+export function ensureVersionPrefix(baseURL: string | undefined): string | undefined {
+  if (baseURL === undefined) return undefined;
   const trimmed = baseURL.replace(/\/+$/, '');
   return /\/v\d+$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
-// ========== Translation helpers (pure functions) ==========
-
-function normalizeOpenAIStopReason(fr: string): StopReason {
+export function normalizeOpenAIStopReason(fr: string): StopReason {
   switch (fr) {
     case 'stop':
       return 'stop';
@@ -171,7 +196,7 @@ function normalizeOpenAIStopReason(fr: string): StopReason {
   }
 }
 
-function toolToOpenAI(tool: Tool): OpenAI.ChatCompletionTool {
+export function toolToOpenAI(tool: Tool): OpenAI.ChatCompletionTool {
   const schema = z.toJSONSchema(tool.inputSchema) as Record<string, unknown>;
   delete schema['$schema'];
   return {
@@ -190,7 +215,7 @@ function toolToOpenAI(tool: Tool): OpenAI.ChatCompletionTool {
  * messages expand into one role='tool' entry per ToolResult (OpenAI requires
  * one per tool_call_id).
  */
-function toOpenAIMessages(
+export function toOpenAIMessages(
   messages: Message[],
   systemPrompt: string,
 ): OpenAI.ChatCompletionMessageParam[] {

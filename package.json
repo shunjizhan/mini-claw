@@ -1,5 +1,5 @@
 {
-  "name": "mini-claw",
+  "name": "nano-claw",
   "version": "0.0.1",
   "description": "Mini provider-agnostic Claude Code clone (learning exercise). TypeScript + Bun. Supports OpenAI and Anthropic.",
   "type": "module",
@@ -11,6 +11,9 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "test": "bun test",
+    "test:cov": "bun test --coverage",
+    "test:e2e": "MINI_CC_REAL_API=1 bun test test/e2e",
+    "test:all": "MINI_CC_REAL_API=1 bun test",
     "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {

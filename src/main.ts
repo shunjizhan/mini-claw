@@ -64,8 +64,9 @@ async function main(): Promise<void> {
   rl.on('SIGINT', onSigint);
 
   const provName = process.env['MINI_CC_PROVIDER'] ?? 'anthropic';
+  const baseURL = resolveBaseURL() ?? '(SDK default)';
   console.log(
-    `mini-claw | provider=${provName} | model=${provider.model} | baseURL=${resolveBaseURL()} | cwd=${cwd}\n` +
+    `mini-claw | provider=${provName} | model=${provider.model} | baseURL=${baseURL} | cwd=${cwd}\n` +
       `Ctrl+C aborts the current turn; Ctrl+D exits.`,
   );
   rl.prompt();

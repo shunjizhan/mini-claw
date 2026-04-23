@@ -36,7 +36,8 @@ export interface AnthropicProviderOptions {
  * per-block `index`; text arrives as `text_delta`, tool input arrives as
  * `input_json_delta` chunks of a JSON string. We accumulate per-index state,
  * then emit one atomic `message_complete` with the assembled AssistantMessage
- * at `message_stop`.
+ * at `message_stop`. All translation logic lives in `translateAnthropicStream`
+ * so it's testable without mocking the SDK client.
  */
 export class AnthropicProvider implements LLMProvider {
   private readonly client: Anthropic;
@@ -47,7 +48,10 @@ export class AnthropicProvider implements LLMProvider {
     const apiKey =
       opts.apiKey ?? process.env['ANTHROPIC_API_KEY'] ?? PLACEHOLDER_API_KEY;
     const baseURL = resolveBaseURL(opts.baseURL);
-    this.client = new Anthropic({ apiKey, baseURL });
+    this.client = new Anthropic({
+      apiKey,
+      ...(baseURL ? { baseURL } : {}),
+    });
     this.model =
       opts.model ?? process.env['MINI_CC_MODEL'] ?? DEFAULT_MODEL;
     this.maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
@@ -73,107 +77,129 @@ export class AnthropicProvider implements LLMProvider {
       { signal },
     );
 
-    type BlockState =
-      | { type: 'text'; text: string }
-      | { type: 'tool_use'; id: string; name: string; partialJson: string };
-    const blocks = new Map<number, BlockState>();
-    let stopReason: StopReason = 'stop';
-    const usage: Usage = { inputTokens: 0, outputTokens: 0 };
-
-    for await (const event of stream) {
-      switch (event.type) {
-        case 'message_start': {
-          const u = event.message.usage;
-          usage.inputTokens = u.input_tokens ?? 0;
-          usage.outputTokens = u.output_tokens ?? 0;
-          break;
-        }
-        case 'content_block_start': {
-          const cb = event.content_block;
-          if (cb.type === 'text') {
-            blocks.set(event.index, { type: 'text', text: '' });
-          } else if (cb.type === 'tool_use') {
-            blocks.set(event.index, {
-              type: 'tool_use',
-              id: cb.id,
-              name: cb.name,
-              partialJson: '',
-            });
-          }
-          break;
-        }
-        case 'content_block_delta': {
-          const state = blocks.get(event.index);
-          if (!state) break;
-          const delta = event.delta;
-          if (delta.type === 'text_delta' && state.type === 'text') {
-            state.text += delta.text;
-            yield { type: 'text_delta', text: delta.text };
-          } else if (
-            delta.type === 'input_json_delta' &&
-            state.type === 'tool_use'
-          ) {
-            state.partialJson += delta.partial_json;
-          }
-          break;
-        }
-        case 'content_block_stop':
-          break;
-        case 'message_delta': {
-          if (event.delta.stop_reason) {
-            stopReason = normalizeAnthropicStopReason(
-              event.delta.stop_reason,
-            );
-          }
-          if (event.usage?.output_tokens !== undefined) {
-            usage.outputTokens = event.usage.output_tokens;
-          }
-          break;
-        }
-        case 'message_stop':
-          break;
-      }
-    }
-
-    const content: Array<TextBlock | ToolUse> = [];
-    const sortedIndices = [...blocks.keys()].sort((a, b) => a - b);
-    for (const idx of sortedIndices) {
-      const state = blocks.get(idx);
-      if (!state) continue;
-      if (state.type === 'text') {
-        if (state.text.length > 0) {
-          content.push({ type: 'text', text: state.text });
-        }
-      } else {
-        let input: Record<string, unknown>;
-        try {
-          input =
-            state.partialJson.length > 0
-              ? (JSON.parse(state.partialJson) as Record<string, unknown>)
-              : {};
-        } catch (err) {
-          throw new ProviderProtocolError(
-            `Anthropic returned tool_use with malformed JSON input (tool=${state.name}, id=${state.id}): ${state.partialJson}`,
-            err,
-          );
-        }
-        content.push({
-          type: 'tool_use',
-          id: state.id,
-          name: state.name,
-          input,
-        });
-      }
-    }
-
-    const assistantMessage: AssistantMessage = { role: 'assistant', content };
-    yield { type: 'message_complete', assistantMessage, stopReason, usage };
+    yield* translateAnthropicStream(stream);
   }
 }
 
-// ========== Translation helpers (pure functions) ==========
+// ========== Translation (pure; exported for unit tests) ==========
 
-function normalizeAnthropicStopReason(sr: string): StopReason {
+/**
+ * Consume raw Anthropic streaming events and yield neutral StreamEvents.
+ *
+ * State machine:
+ *   - `message_start` seeds usage
+ *   - `content_block_start` registers per-index accumulator (text or tool_use)
+ *   - `content_block_delta` appends text (yielded live) or input_json chunks
+ *     (buffered; parsed at stream end)
+ *   - `content_block_stop` is a no-op — the accumulator already holds
+ *     everything we need
+ *   - `message_delta` normalizes stop_reason + refines usage.output_tokens
+ *   - `message_stop` signals the stream end; at this point we assemble the
+ *     final AssistantMessage (sorted by index) and emit message_complete
+ *
+ * If a tool_use block's accumulated JSON fails to parse, throws
+ * ProviderProtocolError so QueryEngine can drop the turn rather than
+ * fabricate a synthetic ToolResult.
+ */
+export async function* translateAnthropicStream(
+  events: AsyncIterable<Anthropic.RawMessageStreamEvent>,
+): AsyncGenerator<StreamEvent, void, unknown> {
+  type BlockState =
+    | { type: 'text'; text: string }
+    | { type: 'tool_use'; id: string; name: string; partialJson: string };
+  const blocks = new Map<number, BlockState>();
+  let stopReason: StopReason = 'stop';
+  const usage: Usage = { inputTokens: 0, outputTokens: 0 };
+
+  for await (const event of events) {
+    switch (event.type) {
+      case 'message_start': {
+        const u = event.message.usage;
+        usage.inputTokens = u.input_tokens ?? 0;
+        usage.outputTokens = u.output_tokens ?? 0;
+        break;
+      }
+      case 'content_block_start': {
+        const cb = event.content_block;
+        if (cb.type === 'text') {
+          blocks.set(event.index, { type: 'text', text: '' });
+        } else if (cb.type === 'tool_use') {
+          blocks.set(event.index, {
+            type: 'tool_use',
+            id: cb.id,
+            name: cb.name,
+            partialJson: '',
+          });
+        }
+        break;
+      }
+      case 'content_block_delta': {
+        const state = blocks.get(event.index);
+        if (!state) break;
+        const delta = event.delta;
+        if (delta.type === 'text_delta' && state.type === 'text') {
+          state.text += delta.text;
+          yield { type: 'text_delta', text: delta.text };
+        } else if (
+          delta.type === 'input_json_delta' &&
+          state.type === 'tool_use'
+        ) {
+          state.partialJson += delta.partial_json;
+        }
+        break;
+      }
+      case 'content_block_stop':
+        break;
+      case 'message_delta': {
+        if (event.delta.stop_reason) {
+          stopReason = normalizeAnthropicStopReason(event.delta.stop_reason);
+        }
+        if (event.usage?.output_tokens !== undefined) {
+          usage.outputTokens = event.usage.output_tokens;
+        }
+        break;
+      }
+      case 'message_stop':
+        break;
+    }
+  }
+
+  const content: Array<TextBlock | ToolUse> = [];
+  const sortedIndices = [...blocks.keys()].sort((a, b) => a - b);
+  for (const idx of sortedIndices) {
+    const state = blocks.get(idx);
+    if (!state) continue;
+    if (state.type === 'text') {
+      if (state.text.length > 0) {
+        content.push({ type: 'text', text: state.text });
+      }
+    } else {
+      let input: Record<string, unknown>;
+      try {
+        input =
+          state.partialJson.length > 0
+            ? (JSON.parse(state.partialJson) as Record<string, unknown>)
+            : {};
+      } catch (err) {
+        throw new ProviderProtocolError(
+          `Anthropic returned tool_use with malformed JSON input (tool=${state.name}, id=${state.id}): ${state.partialJson}`,
+          err,
+        );
+      }
+      content.push({
+        type: 'tool_use',
+        id: state.id,
+        name: state.name,
+        input,
+      });
+    }
+  }
+
+  const assistantMessage: AssistantMessage = { role: 'assistant', content };
+  yield { type: 'message_complete', assistantMessage, stopReason, usage };
+}
+
+export function normalizeAnthropicStopReason(sr: string): StopReason {
   switch (sr) {
     case 'end_turn':
     case 'stop_sequence':
@@ -187,7 +213,7 @@ function normalizeAnthropicStopReason(sr: string): StopReason {
   }
 }
 
-function toolToAnthropic(tool: Tool): Anthropic.Messages.Tool {
+export function toolToAnthropic(tool: Tool): Anthropic.Messages.Tool {
   const schema = z.toJSONSchema(tool.inputSchema) as Record<string, unknown>;
   delete schema['$schema'];
   return {
@@ -199,11 +225,10 @@ function toolToAnthropic(tool: Tool): Anthropic.Messages.Tool {
 
 /**
  * Neutral messages[] → Anthropic MessageParam[]. Our role='tool' messages
- * become role='user' messages containing tool_result blocks. Adjacent
- * role='tool' entries collapse into the same user message (rare but valid
- * when Anthropic requires one user message per tool-result batch).
+ * become role='user' messages containing tool_result blocks (Anthropic has
+ * no tool role — user/assistant only).
  */
-function toAnthropicMessages(
+export function toAnthropicMessages(
   messages: Message[],
 ): Anthropic.Messages.MessageParam[] {
   const out: Anthropic.Messages.MessageParam[] = [];
