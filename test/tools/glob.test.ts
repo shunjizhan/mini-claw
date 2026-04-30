@@ -8,7 +8,7 @@ import type { ToolContext } from '../../src/Tool';
 import { asText } from '../fixtures/tool-helpers';
 
 function ctx(cwd: string): ToolContext {
-  return { cwd, signal: new AbortController().signal };
+  return { cwd, signal: new AbortController().signal, tools: [] };
 }
 
 async function setupTree(cwd: string): Promise<void> {

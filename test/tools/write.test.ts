@@ -7,7 +7,7 @@ import { writeTool } from '../../src/tools/write';
 import type { ToolContext } from '../../src/Tool';
 
 function ctx(cwd: string): ToolContext {
-  return { cwd, signal: new AbortController().signal };
+  return { cwd, signal: new AbortController().signal, tools: [] };
 }
 
 describe('writeTool', () => {

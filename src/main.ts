@@ -5,11 +5,14 @@ import { Command } from 'commander';
 import { QueryEngine } from './QueryEngine';
 import { DEFAULT_TOOLS } from './tools/index';
 import { buildSkillTool } from './tools/skill';
+import { buildAgentTool } from './tools/agent';
 import { resolveBaseURL, selectProvider } from './providers/index';
 import { assembleSystemPrompt, loadMemory } from './prompt';
 import { createReadlinePermissionPrompter } from './permissions';
 import { loadSkills } from './skills/loader';
+import { loadAgents } from './agents/loader';
 import { ProviderProtocolError } from './types';
+import type { Tool } from './Tool';
 
 async function main(): Promise<void> {
   const program = new Command();
@@ -34,15 +37,30 @@ async function main(): Promise<void> {
 
   const provider = selectProvider();
   const memory = await loadMemory(cwd);
-  const skills = await loadSkills({ cwd });
-  // Skill tool is only registered when at least one skill is discoverable —
-  // matches real CC's behavior of not exposing the tool when the skill set
-  // is empty (avoids the model inventing skill names).
-  const tools =
-    skills.length > 0
-      ? [...DEFAULT_TOOLS, buildSkillTool(skills)]
-      : DEFAULT_TOOLS;
-  const systemPrompt = assembleSystemPrompt({ tools, cwd, memory, skills });
+  const [skills, agents] = await Promise.all([
+    loadSkills({ cwd }),
+    loadAgents({ cwd }),
+  ]);
+  // Skill / Agent tools are only registered when at least one of each is
+  // discoverable — matches real CC's behavior of not exposing the dispatcher
+  // when its registry is empty (avoids the model inventing names).
+  //
+  // The Agent tool reads the parent's tool pool from `ctx.tools` at call
+  // time (populated fresh per turn by QueryEngine), so it doesn't need a
+  // construction-time reference to the `tools` array. Mirrors real CC's
+  // `toolUseContext.options.tools` mechanism — see ToolContext docs.
+  const tools: Tool[] = [...DEFAULT_TOOLS];
+  if (skills.length > 0) tools.push(buildSkillTool(skills));
+  if (agents.length > 0) {
+    tools.push(buildAgentTool(agents, { provider, memory }));
+  }
+  const systemPrompt = assembleSystemPrompt({
+    tools,
+    cwd,
+    memory,
+    skills,
+    agents,
+  });
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -85,8 +103,12 @@ async function main(): Promise<void> {
     skills.length > 0
       ? ` | skills=${skills.length} (${skills.map((s) => s.name).join(', ')})`
       : '';
+  const agentNote =
+    agents.length > 0
+      ? ` | agents=${agents.length} (${agents.map((a) => a.agentType).join(', ')})`
+      : '';
   console.log(
-    `mini-claw | provider=${provName} | model=${provider.model} | baseURL=${baseURL} | cwd=${cwd}${skillNote}\n` +
+    `mini-claw | provider=${provName} | model=${provider.model} | baseURL=${baseURL} | cwd=${cwd}${skillNote}${agentNote}\n` +
       `Ctrl+C aborts the current turn; Ctrl+D exits.`,
   );
   rl.prompt();

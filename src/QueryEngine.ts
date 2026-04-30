@@ -101,7 +101,11 @@ export class QueryEngine {
 
     this.abortController = new AbortController();
     const signal = this.abortController.signal;
-    const ctx: ToolContext = { cwd: this.cwd, signal };
+    // ctx.tools is the parent's full tool pool — Agent reads this at call
+    // time to filter the child pool (recursion guard + per-agent allowlist).
+    // Mirrors real CC's `toolUseContext.options.tools`
+    // (`../claude-code/src/tools/AgentTool/AgentTool.tsx:627`).
+    const ctx: ToolContext = { cwd: this.cwd, signal, tools: this.tools };
 
     try {
       while (true) {

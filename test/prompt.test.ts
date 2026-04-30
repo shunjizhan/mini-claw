@@ -2,11 +2,13 @@ import { describe, test, expect } from 'bun:test';
 
 import {
   assembleSystemPrompt,
+  formatAgents,
   formatSkills,
   formatTools,
 } from '../src/prompt';
 import { DEFAULT_TOOLS } from '../src/tools/index';
 import type { Skill } from '../src/skills/loader';
+import type { AgentDefinition } from '../src/agents/loader';
 
 describe('assembleSystemPrompt', () => {
   test('includes base + tools + cwd', () => {
@@ -56,6 +58,61 @@ describe('assembleSystemPrompt', () => {
   test('skills block omitted when empty list', () => {
     const out = assembleSystemPrompt({ tools: [], cwd: '/', skills: [] });
     expect(out).not.toContain('# Available skills');
+  });
+
+  test('agents block appears when agents provided', () => {
+    const agents: AgentDefinition[] = [
+      {
+        agentType: 'explorer',
+        whenToUse: 'For codebase research.',
+        prompt: 'body',
+        source: 'project',
+        filePath: '/fake/explorer.md',
+      },
+    ];
+    const out = assembleSystemPrompt({ tools: [], cwd: '/', agents });
+    expect(out).toContain('# Available agents');
+    expect(out).toContain('**explorer**: For codebase research.');
+  });
+
+  test('agents block omitted when empty list', () => {
+    const out = assembleSystemPrompt({ tools: [], cwd: '/', agents: [] });
+    expect(out).not.toContain('# Available agents');
+  });
+});
+
+describe('formatAgents', () => {
+  test('renders agentType + whenToUse bullet', () => {
+    const out = formatAgents([
+      {
+        agentType: 'explorer',
+        whenToUse: 'For research.',
+        prompt: '',
+        source: 'project',
+        filePath: '/x',
+      },
+    ]);
+    expect(out).toBe('- **explorer**: For research.');
+  });
+
+  test('renders multiple agents one per line', () => {
+    const out = formatAgents([
+      {
+        agentType: 'a',
+        whenToUse: 'A.',
+        prompt: '',
+        source: 'project',
+        filePath: '/x',
+      },
+      {
+        agentType: 'b',
+        whenToUse: 'B.',
+        prompt: '',
+        source: 'project',
+        filePath: '/x',
+      },
+    ]);
+    expect(out.split('\n')).toEqual(['- **a**: A.', '- **b**: B.']);
   });
 });
 

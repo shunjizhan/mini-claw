@@ -305,6 +305,176 @@ in-conversation, on demand, without ever mutating the system prompt. That
 keeps the system prompt cacheable across turns and matches real CC's
 `newMessages` mechanism (`SkillTool.ts:728-755`).
 
+## Subagent loading and invoking
+
+Subagents are markdown-defined personas loaded at REPL startup, advertised
+via the system prompt, and invoked through a single dispatcher tool whose
+`call()` **spawns a fresh `QueryEngine`** with isolated state — its own
+`messages[]`, its own system prompt (the agent body, not the parent's
+persona), and a filtered tool pool. The child runs to completion; only the
+final assistant text bubbles back to the parent as the `tool_result`
+content (real CC: `tools/AgentTool/AgentTool.tsx:82-87` for the schema,
+`tools/AgentTool/agentToolUtils.ts:297-356` for the result extraction).
+
+**Contrast with skills.** Both are markdown + single-dispatcher, but the
+result mechanism differs:
+
+| | Skill | Subagent |
+|---|---|---|
+| Body delivery | Injected as a follow-up `UserMessage` in the parent's history | Stays inside the child; never appears in the parent |
+| Parent transcript shape | `[user, asst, tool, **user (injection)**, ...]` | `[user, asst, tool, asst]` — same as a vanilla tool call |
+
+### Phase 1 — loading (at startup)
+
+```
+  MAIN (startup)              AgentLoader               FileSystem
+       │                            │                         │
+       │  loadAgents({ cwd })       │                         │
+       ├───────────────────────────►│                         │
+       │                            │  readdir                │
+       │                            │   ./.mini-cc/agents/    │
+       │                            ├────────────────────────►│
+       │                            │◄────── entries ─────────┤
+       │                            │  readdir                │
+       │                            │   ~/.mini-cc/agents/    │
+       │                            ├────────────────────────►│
+       │                            │◄────── entries ─────────┤
+       │                            │                         │
+       │                            │  for each *.md file:    │
+       │                            │    Bun.file(...).text() │
+       │                            ├────────────────────────►│
+       │                            │◄──── markdown text ─────┤
+       │                            │    parseAgentFile       │
+       │                            │     (YAML + body)       │
+       │                            │     parseAgentTools     │
+       │                            │                         │
+       │                            │  dedup: project > user  │
+       │                            │  sort by agentType      │
+       │◄── AgentDefinition[] ──────┤                         │
+       │                            │                         │
+       │  register Agent tool;      │                         │
+       │  list agents in            │                         │
+       │  system prompt             │                         │
+```
+
+Notes:
+- One markdown file per agent (`<slug>.md`); the filename stem is the
+  `agentType` the model passes as `subagent_type`.
+- Project beats user on conflict — first-wins dedup, same as skills.
+- Agent **bodies** are NOT in the parent's system prompt — only a short
+  `# Available agents` listing (agentType + whenToUse). Bodies are
+  reserved for the *child's* system prompt at spawn time.
+
+### Phase 2 — invocation, parent's view
+
+The model invokes a subagent with
+`Agent({ description, prompt, subagent_type })`. From the parent's side
+this is a normal tool call: `ToolUse(Agent) → ToolMessage → final text`.
+The novelty is that `Agent.call()` doesn't hit the filesystem or the
+network — it spawns a child engine (see Phase 3).
+
+```
+  USER                 MAIN (REPL)                Parent QE                       Provider                  Agent.call
+   │                        │                          │                              │                          │
+   │ prompt asking          │                          │                              │                          │
+   │ for delegated work     │                          │                              │                          │
+   ├───────────────────────►│                          │                              │                          │
+   │                        │  submitMessage(text)     │                              │                          │
+   │                        ├─────────────────────────►│                              │                          │
+   │                        │                          │    ① engine bookkeeping      │                          │
+   │                        │                          │                              │                          │
+   │                        │                          │  sampleStream(...)           │                          │
+   │                        │                          ├─────────────────────────────►│                          │
+   │                        │                          │◄── message_complete event ───┤                          │
+   │                        │                          │    stopReason: 'tool_use'    │                          │
+   │                        │                          │    ToolUse(Agent, {          │                          │
+   │                        │                          │      description, prompt,    │                          │
+   │                        │                          │      subagent_type           │                          │
+   │                        │                          │    })                        │                          │
+   │                        │                          │                              │                          │
+   │                        │                          │    ② engine bookkeeping      │                          │
+   │                        │                          │                              │                          │
+   │                        │                          │  Agent.call(input, ctx)      │                          │
+   │                        │                          ├─────────────────────────────────────────────────────────►│
+   │                        │                          │                              │   (in-process; spawns    │
+   │                        │                          │                              │    a Child QueryEngine — │
+   │                        │                          │                              │    see Phase 3)          │
+   │                        │                          │◄────── { content: <child's last assistant text> } ───────┤
+   │                        │                          │                              │                          │
+   │                        │                          │    ③ engine bookkeeping      │                          │
+   │                        │                          │                              │                          │
+   │                        │                          │  sampleStream(...)           │                          │
+   │                        │                          ├─────────────────────────────►│                          │
+   │                        │                          │◄─── text_delta event ────────┤   (×N)                   │
+   │                        │  text_delta (yielded)    │                              │                          │
+   │                        │◄─────────────────────────┤                              │                          │
+   │ stdout prints          │                          │                              │                          │
+   │◄───────────────────────┤                          │                              │                          │
+   │                        │                          │◄── message_complete event ───┤                          │
+   │                        │                          │    stopReason: 'stop'        │                          │
+   │                        │                          │                              │                          │
+   │                        │                          │    ④ engine bookkeeping      │                          │
+   │                        │                          │                              │                          │
+   │                        │  AsyncGenerator done     │                              │                          │
+   │                        │◄─────────────────────────┤                              │                          │
+   │  '> ' prompt           │                          │                              │                          │
+   │◄───────────────────────┤                          │                              │                          │
+```
+
+**Engine bookkeeping** — same shape as the per-tool flow at the top of
+this README; the only specialness is at ②, where the dispatch goes
+in-process to `Agent.call()` instead of out to `Local`. The
+`{ content }` it returns becomes the `tool_result` content, no injection.
+
+**Final state of the parent's `messages[]`** — same 4-entry shape as any
+one-shot tool call:
+
+```
+[0] UserMessage       content=[TextBlock("Use the explorer subagent to find ...")]
+[1] AssistantMessage  content=[ToolUse(Agent, { description, prompt, subagent_type })]
+[2] ToolMessage       content=[ToolResult(<child's last assistant text — full report>)]
+[3] AssistantMessage  content=[TextBlock("The QueryEngine lives at src/QueryEngine.ts:47, ...")]
+```
+
+### Phase 3 — invocation, inside `Agent.call()`
+
+`Agent.call()` spawns a fresh `QueryEngine` and drains it. The child runs
+its own full sample/dispatch loop — same shape as the high-level
+architectural flow at the top of this README, just with the agent body as
+its system prompt and a filtered tool pool.
+
+```
+   Agent.call              Child QE                    Provider                    Local
+       │                       │                            │                         │
+       │ build child:          │                            │                         │
+       │  ── filter parent     │                            │                         │
+       │     tools (drop Agent,│                            │                         │
+       │     apply allowlist)  │                            │                         │
+       │  ── system prompt =   │                            │                         │
+       │     agent body        │                            │                         │
+       │                       │                            │                         │
+       │ new QueryEngine ─────►│                            │                         │
+       │                       │                            │                         │
+       │ submitMessage(prompt) │                            │                         │
+       ├──────────────────────►│                            │                         │
+       │                       │  ╔══ child loop ═══════════════════════════════════╗ │
+       │                       │  ║ sampleStream → Provider                         ║ │
+       │                       │  ║ message_complete → if tool_use, dispatch &      ║ │
+       │                       │  ║   loop; if stop, exit                           ║ │
+       │                       │  ║ tool dispatch may hit Local (Bun.file, spawn)   ║ │
+       │                       │  ╚═════════════════════════════════════════════════╝ │
+       │◄── generator done ────┤                            │                         │
+       │                       │                            │                         │
+       │ extract last          │                            │                         │
+       │ assistant text        │                            │                         │
+       │ return { content }    │                            │                         │
+```
+
+The child's transcript is **discarded** when `Agent.call()` returns. Only
+the final assistant text comes back, as the `content` of the parent's
+`[2] ToolMessage` above. That is the whole point — the parent gets a clean
+report without paying the token cost of the child's intermediate work.
+
 ## Provider selection
 
 - `MINI_CC_PROVIDER=anthropic` (default) — uses `ANTHROPIC_API_KEY` if set

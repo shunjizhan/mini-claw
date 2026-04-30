@@ -4,7 +4,7 @@ import { bashTool } from '../../src/tools/bash';
 import type { ToolContext } from '../../src/Tool';
 
 function ctx(signal?: AbortSignal): ToolContext {
-  return { cwd: '/tmp', signal: signal ?? new AbortController().signal };
+  return { cwd: '/tmp', signal: signal ?? new AbortController().signal, tools: [] };
 }
 
 describe('bashTool', () => {

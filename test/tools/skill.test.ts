@@ -5,7 +5,7 @@ import type { Skill } from '../../src/skills/loader';
 import type { ToolContext } from '../../src/Tool';
 
 function ctx(): ToolContext {
-  return { cwd: '/tmp', signal: new AbortController().signal };
+  return { cwd: '/tmp', signal: new AbortController().signal, tools: [] };
 }
 
 const s = (over: Partial<Skill> = {}): Skill => ({

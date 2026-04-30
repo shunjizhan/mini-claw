@@ -7,10 +7,19 @@ import { z } from 'zod';
  * - `signal` is the per-turn AbortSignal. Tools MUST honor this and bail
  *   within 5 seconds of abort or the dispatcher will treat them as hard-killed
  *   (for Bash: SIGTERM, then SIGKILL after 5s).
+ * - `tools` is the parent session's full tool pool, populated fresh per turn
+ *   from `QueryEngine.tools`. The Agent tool reads this to filter the child's
+ *   pool (recursion guard + per-agent allowlist). Mirrors real CC's
+ *   `ToolUseContext.options.tools` (`../claude-code/src/Tool.ts:158-179`,
+ *   `../claude-code/src/tools/AgentTool/AgentTool.tsx:627`). Real CC nests
+ *   this under `options` alongside ~10 other config-ish fields (commands,
+ *   mainLoopModel, mcpClients, etc.) — mini-claw doesn't have those analogs,
+ *   so we keep `tools` flat alongside `cwd` and `signal`.
  */
 export interface ToolContext {
   cwd: string;
   signal: AbortSignal;
+  tools: readonly Tool[];
 }
 
 /**

@@ -7,7 +7,7 @@ import { editTool } from '../../src/tools/edit';
 import type { ToolContext } from '../../src/Tool';
 
 function ctx(cwd: string): ToolContext {
-  return { cwd, signal: new AbortController().signal };
+  return { cwd, signal: new AbortController().signal, tools: [] };
 }
 
 describe('editTool', () => {

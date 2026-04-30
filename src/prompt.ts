@@ -1,5 +1,6 @@
 import type { Tool } from './Tool';
 import type { Skill } from './skills/loader';
+import type { AgentDefinition } from './agents/loader';
 
 const BASE_INSTRUCTION = `You are mini-claw, a concise coding assistant running in a terminal REPL.
 
@@ -18,6 +19,13 @@ export interface AssembleSystemPromptOptions {
   memory?: string | undefined;
   /** Available skills (from src/skills/loader). Listed for model discovery. */
   skills?: Skill[] | undefined;
+  /**
+   * Available subagent types (from src/agents/loader). Listed so the model
+   * knows what `subagent_type` values to pass to the Agent tool. Mirrors
+   * real CC's per-agent listing pattern (`AgentTool/prompt.ts:43-46`,
+   * `formatAgentLine`).
+   */
+  agents?: AgentDefinition[] | undefined;
 }
 
 /**
@@ -51,6 +59,10 @@ export function assembleSystemPrompt(
 
   if (opts.skills && opts.skills.length > 0) {
     parts.push('', '# Available skills', formatSkills(opts.skills));
+  }
+
+  if (opts.agents && opts.agents.length > 0) {
+    parts.push('', '# Available agents', formatAgents(opts.agents));
   }
 
   parts.push('', '# Environment', `- cwd: ${opts.cwd}`);
@@ -95,6 +107,17 @@ export function formatSkills(skills: Skill[]): string {
       return s.whenToUse ? `${first}\n  (use when: ${s.whenToUse})` : first;
     })
     .join('\n');
+}
+
+/**
+ * Render the discovered agents as a bulleted listing. One line per agent:
+ * `- agentType: whenToUse` (mirrors real CC's `formatAgentLine` shape from
+ * `tools/AgentTool/prompt.ts:43-46`, minus the `(Tools: ...)` suffix —
+ * mini-claw doesn't surface the per-agent tool listing in the parent's
+ * prompt to keep the cache surface small).
+ */
+export function formatAgents(agents: AgentDefinition[]): string {
+  return agents.map((a) => `- **${a.agentType}**: ${a.whenToUse}`).join('\n');
 }
 
 /**
