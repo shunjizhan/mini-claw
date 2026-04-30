@@ -4,10 +4,16 @@ A provider-agnostic mini Claude Code clone — a learning exercise to understand
 the agentic patterns behind the real `claude-code` source. Methodology-faithful,
 not feature-complete. TypeScript + Bun. Supports OpenAI and Anthropic.
 
-## Status
+## What's in here
 
-Tier 1 in progress. See `docs/DESIGN.md` link in the full design doc for the
-build order and stopping criteria.
+A working REPL agent with the agent loop, six tools (Read / Write / Edit /
+Bash / Glob / Grep), permission prompts, a skill system, and a subagent
+system. Planned: built-in agent presets, TodoWrite, plan mode, parallel tool
+execution, hooks, context compaction, MCP, and plugin bundles.
+
+See **[`docs/DESIGN.md`](docs/DESIGN.md)** for the canonical design spec —
+architecture, feature inventory with status, implementation plans for
+unfinished work, the out-of-scope list, and build order.
 
 ## Quick start
 
@@ -507,5 +513,17 @@ Each module maps to a file in the real Claude Code source:
 | `src/tools/write.ts` | `src/tools/FileWriteTool/FileWriteTool.ts` |
 | `src/tools/edit.ts` | `src/tools/FileEditTool/FileEditTool.ts` |
 | `src/tools/bash.ts` | `src/tools/BashTool/BashTool.tsx` |
+| `src/tools/glob.ts` | `src/tools/GlobTool/GlobTool.ts` |
+| `src/tools/grep.ts` | `src/tools/GrepTool/GrepTool.ts` |
+| `src/skills/loader.ts` | `src/skills/loadSkillsDir.ts` |
+| `src/tools/skill.ts` | `src/tools/SkillTool/SkillTool.ts` |
+| `src/agents/loader.ts` | `src/tools/AgentTool/loadAgentsDir.ts` |
+| `src/tools/agent.ts` | `src/tools/AgentTool/AgentTool.tsx` + `agentToolUtils.ts` |
+| `src/permissions.ts` | `src/utils/permissions/` |
 
-We ported methodology (shape, contracts, dispatch) — not code.
+Each mini-claw module mirrors the methodology — shape, contracts, dispatch —
+of its real Claude Code counterpart, not the code.
+
+For the full design — feature inventory with status, implementation plans for
+unfinished work, MCP/Plugin specs, out-of-scope list, build order:
+**[`docs/DESIGN.md`](docs/DESIGN.md)**.

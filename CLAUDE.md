@@ -45,9 +45,9 @@ flow. It is a teaching/reference port, not an opinion port. The rule:
   solution and pretend it matches. The user wants the real flow; tell them
   the real answer.
 - **Simplifications are allowed; inventions are not.** Mini-claw is
-  intentionally a Tier-3 subset of real CC (no plugins, no MCP, no
-  subagents, etc.). Skipping features is fine and expected. Replacing them
-  with a different design is not.
+  intentionally a subset of real CC — see `docs/DESIGN.md` for the
+  feature inventory and the explicit out-of-scope list. Skipping features
+  is fine and expected. Replacing them with a different design is not.
 - **If you've already started building something that diverges from real
   CC, stop and surface it.** Past mistake: "per-skill typed tools via
   `tools:` frontmatter" — invented from scratch, not in real CC. The
